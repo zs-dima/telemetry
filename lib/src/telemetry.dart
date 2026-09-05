@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:meta/meta.dart';
+import 'package:telemetry/src/attributes.dart';
 import 'package:telemetry/src/buffer.dart';
 import 'package:telemetry/src/draft.dart';
 import 'package:telemetry/src/event.dart';
@@ -13,36 +14,33 @@ import 'package:telemetry/src/zone.dart';
 /// The facade every call site talks to.
 ///
 /// One instance per app, created during initialization and reachable as `log`.
-/// It owns a sink list, a ring buffer and the launch id, nothing more: every
-/// destination is a [TelemetrySink] registered at composition time.
+/// It owns a sink list, a ring buffer and the launch id; every destination is a
+/// [TelemetrySink] registered at composition time.
 ///
-/// Per isolate, like everything else in Dart: a spawned isolate sees none of
-/// these sinks and none of the zone-scoped options. Give it its own instance and
-/// forward what it logs to the main one through a `SendPort` and [emit].
+/// State is per isolate. A spawned isolate sees none of these sinks and none of
+/// the zone-scoped options, so give it its own instance and forward what it
+/// logs through a `SendPort` and [emit].
 /// {@endtemplate}
 final class Telemetry {
   /// How deep [emit] may re-enter itself before events are dropped.
   ///
-  /// A sink that logs from `handle` produces an event that reaches that sink
-  /// again. One level of that is a diagnostic; unbounded is a hang.
+  /// A sink that logs from `handle` produces an event that reaches it again.
   static const int _maxDepth = 3;
 
   /// {@macro telemetry}
   Telemetry({required this.runId, LogBuffer? buffer}) : buffer = buffer ?? LogBuffer();
 
-  /// The registered sinks, replaced rather than mutated: [emit] iterates the
-  /// list it read, so a sink that registers or removes one while handling an
-  /// event cannot corrupt the iteration.
+  /// The registered sinks, replaced rather than mutated, so a sink that adds or
+  /// removes one while handling an event cannot corrupt [emit]'s iteration.
   List<TelemetrySink> _sinks = const <TelemetrySink>[];
 
   /// Sinks that already reported a failure. A broken sink is usually broken for
-  /// every event, and one report per event would bury the lines being read.
+  /// every event, and one report per event would bury the log.
   final Set<TelemetrySink> _failedSinks = Set<TelemetrySink>.identity();
 
   int _depth = 0;
   bool _depthReported = false;
   int _sequence = 0;
-  List<LogDraft>? _unchecked;
 
   /// Identifier of this app launch. Travels on every event.
   final String runId;
@@ -60,55 +58,70 @@ final class Telemetry {
   NotifySink? notifySink;
 
   /// The events of this launch, newest last. Drained into a journal once one
-  /// exists, and the only source of `trace`, which no sink stores.
+  /// exists, and the only place `trace` lines are kept.
   final LogBuffer buffer;
 
-  /// Where every event's timestamp comes from. Must return UTC.
+  /// Where every event's timestamp comes from.
   ///
-  /// A seam, so a test can pin time instead of tolerating it.
-  DateTime Function() clock = _utcNow;
+  /// A seam, so a test can pin time. [now] converts the result to UTC, so a
+  /// local clock cannot put local time on what leaves the device.
+  DateTime Function() clock = DateTime.now;
 
-  /// The trace in flight, asked once per event.
+  /// The trace in flight, asked once per event, at the moment the call site
+  /// acted.
   ///
-  /// Supplied by whatever owns tracing — a crash reporter's transaction, an
-  /// OpenTelemetry SDK — so a log line can be joined to the request it belongs
-  /// to. Nothing here starts or ends a span.
+  /// Supplied by whatever owns tracing, a crash reporter's transaction or an
+  /// OpenTelemetry SDK, so a line can be joined to its request. Nothing here
+  /// starts or ends a span.
   ({String traceId, String? spanId})? Function()? traceContext;
 
   /// The level from which an event with no stack trace of its own gets one.
   ///
   /// `package:logging`'s `recordStackTraceAtLevel`. Off by default:
-  /// `StackTrace.current` is not free, and most failures arrive with the trace
-  /// that matters already attached.
+  /// `StackTrace.current` is not free, and most failures arrive with a trace.
   LogLevel? stackTraceAtLevel;
 
   /// Whether the debug-only conventions are checked.
   ///
-  /// When on, a `.meta` key must be OpenTelemetry-named (lowercase,
-  /// dot-namespaced, snake_case within a segment) and a body must carry at least
-  /// `Area | operation`. Both are checked inside `assert`, so a release build
-  /// pays nothing and cannot throw. Turn it off for a pipeline whose bodies come
-  /// from somewhere else — a test fixture, a bridge that logs through a draft.
+  /// When on, a `.meta` key and an event `name` must be OpenTelemetry-named, an
+  /// analytics name must be one snake_case word, a trace tier must be 1 to 6,
+  /// and a body must carry at least `Area | operation`. Every check is an
+  /// `assert`, so a release build pays nothing. Turn it off for a pipeline whose
+  /// bodies come from elsewhere; for one bridged line, use
+  /// `LogDraft(..., lenient: true)`.
   bool strict = true;
 
   final StreamController<LogEvent> _events = StreamController<LogEvent>.broadcast();
 
-  /// Every event, as it is dispatched. Late subscribers see only new events;
-  /// read [buffer] for what came before.
+  /// Every event that was built, as it is dispatched.
+  ///
+  /// An observer rather than a consumer: subscribing does not enable a level, so
+  /// a debug overlay cannot switch on every `trace` tier the sinks drop. Late
+  /// subscribers see only new events; read [buffer] for what came before.
   Stream<LogEvent> get events => _events.stream;
 
-  /// Attributes every event of this launch carries, under the ambient scope and
-  /// under the call site's own.
+  /// What identifies this launch, carried by every event as [LogEvent.resource].
   ///
-  /// OpenTelemetry's `Resource`: what identifies the source rather than the
-  /// occurrence — `app.version`, `app.environment`, a device model. Set once
-  /// during initialization; a value that changes per operation belongs in a
-  /// scope or at the call site, not here.
+  /// OpenTelemetry's `Resource`: `app.version`, `app.environment`, a device
+  /// model. It identifies the source rather than the occurrence, so it is not
+  /// copied into each event's `meta` and not rendered on a console line. Set it
+  /// once during initialization; anything that varies per operation belongs in a
+  /// scope or at the call site.
+  ///
+  /// Stored unmodifiable, with any `Object Function()` value resolved on
+  /// assignment: the map travels on every event, and a closure left in it would
+  /// be run, or stored, by every sink that reads attributes.
   Map<String, Object?> get resource => _resource;
   Map<String, Object?> _resource = const <String, Object?>{};
 
-  set resource(Map<String, Object?> value) =>
-      _resource = value.isEmpty ? const <String, Object?>{} : Map<String, Object?>.unmodifiable(value);
+  set resource(Map<String, Object?> value) {
+    assert(
+      !strict || firstInvalidKey(value) == null,
+      'a resource key is OpenTelemetry-named: lowercase, dot-namespaced, snake_case within a '
+      'segment, at least two segments (app.version). Got: ${firstInvalidKey(value)}',
+    );
+    _resource = value.isEmpty ? const <String, Object?>{} : Map<String, Object?>.unmodifiable(resolveAttributes(value));
+  }
 
   /// Registers a destination for logged events.
   ///
@@ -116,31 +129,34 @@ final class Telemetry {
   /// not that one.
   void addSink(TelemetrySink sink) => _sinks = List<TelemetrySink>.unmodifiable(<TelemetrySink>[..._sinks, sink]);
 
-  /// Removes a previously registered sink, and forgets that it ever failed.
+  /// Removes a registered sink and forgets that it failed.
+  ///
+  /// By identity: two sinks that compare equal are still two destinations.
   void removeSink(TelemetrySink sink) {
-    _sinks = List<TelemetrySink>.unmodifiable(_sinks.where((registered) => registered != sink));
+    _sinks = List<TelemetrySink>.unmodifiable(_sinks.where((registered) => !identical(registered, sink)));
     _failedSinks.remove(sink);
   }
 
   /// Starts an event.
   ///
-  /// [message] is the canonical one-liner (`Area | operation | message`) or a
-  /// `String Function()` evaluated only if something consumes it.
+  /// [message] is the canonical one-liner, `Area | operation | message`, or an
+  /// `Object Function()` evaluated only if something consumes it. Describe the
+  /// returned [LogDraft] with `.`, then close it with an action.
+  @UseResult('log(...) starts a draft; close it with an action, e.g. ..info().')
   LogDraft call(Object message) => .new(this, message);
 
   /// Whether anything would consume, or buffer, an event of [level].
   ///
   /// The `Enabled` check of the OpenTelemetry logs API and of `slog.Handler`,
-  /// with one addition: [buffer] counts as a consumer, so this answers `true`
-  /// for `trace` within the buffer's own verbosity ceiling and for `debug` until
-  /// the drain. Call it before composing an expensive message, but do not read
-  /// it as "a sink wants this".
+  /// with [buffer] counted as a consumer, so it answers `true` for `trace`
+  /// within the buffer's ceilings. Call it before composing an expensive
+  /// message; it does not mean a sink wants the event.
   bool isEnabled(LogLevel level, {int verbosity = 0}) {
     if (buffer.guarantees(level, verbosity)) return true;
     for (final sink in _sinks) {
       if (sink.enabled(level, verbosity)) return true;
     }
-    return !_events.isClosed && _events.hasListener;
+    return false;
   }
 
   // --- Conveniences: the plain "log one line" call sites ------------------
@@ -155,18 +171,20 @@ final class Telemetry {
   void w(Object message, {Object? error, StackTrace? stackTrace, Map<String, Object?>? meta}) =>
       _quick(.warn, message, meta, error, stackTrace);
 
-  /// Logs [message] at [LogLevel.error]; reported to the crash reporter.
+  /// Logs [message] at [LogLevel.error]; captured as an incident by a
+  /// `ReportingSink`.
   void e(Object message, {Object? error, StackTrace? stackTrace, Map<String, Object?>? meta}) =>
       _quick(.error, message, meta, error, stackTrace);
 
-  /// Logs [message] at [LogLevel.fatal]; reported to the crash reporter.
+  /// Logs [message] at [LogLevel.fatal]; captured as an incident by a
+  /// `ReportingSink`.
   void f(Object message, {Object? error, StackTrace? stackTrace, Map<String, Object?>? meta}) =>
       _quick(.fatal, message, meta, error, stackTrace);
 
   // --- Trace tiers -------------------------------------------------------
   //
-  // Six named methods rather than one `v(int tier, ...)`: as a leading
-  // positional argument the tier reads as a magic number at the call site.
+  // Six named methods rather than one `v(int tier, ...)`, where the tier would
+  // read as a magic number at the call site.
 
   /// Logs [message] at [LogLevel.trace], tier 1, the loudest tier.
   void v1(Object message, {Map<String, Object?>? meta}) => _verbose(1, message, meta);
@@ -204,15 +222,14 @@ final class Telemetry {
   /// Delivers an already-built [event] to every sink that wants it.
   ///
   /// The `Emit` of the OpenTelemetry logs bridge API: how a record this pipeline
-  /// did not compose gets in. A bridge from another logging package keeps that
-  /// record's own timestamp, an isolate forwards what it logged, a test replays
-  /// a fixture. Nothing is enriched here — the event is taken as given — and the
-  /// conventions [strict] checks are not applied.
+  /// did not compose gets in. A bridge keeps the record's own timestamp, an
+  /// isolate forwards what it logged, a test replays a fixture.
   ///
-  /// Synchronous, like every log action.
+  /// The event is taken as given, down to its [LogEvent.resource], and the
+  /// conventions [strict] checks are skipped. Only the per-sink `enabled` and
+  /// the buffer's floors gate it. Synchronous, like every log action.
   void emit(LogEvent event) {
     if (_depth >= _maxDepth) {
-      // A sink that logs from `handle` on every event would never return.
       if (!_depthReported) {
         _depthReported = true;
         Zone.root.print('Telemetry | dispatch | re-entered $_maxDepth deep, dropping | $event');
@@ -227,8 +244,8 @@ final class Telemetry {
         try {
           sink.handle(event);
         } on Object catch (error, stackTrace) {
-          // A failing sink must not take the others down, and must not recurse
-          // through the pipeline it just broke: report outside it, once.
+          // A failing sink must not take the others down or recurse through the
+          // pipeline it just broke, so report outside it, once.
           if (_failedSinks.add(sink)) {
             Zone.root.print(
               'Telemetry | sink ${sink.runtimeType} failed (further reports silent) | $error\n$stackTrace',
@@ -242,24 +259,18 @@ final class Telemetry {
     }
   }
 
+  /// The instant an event happened, in UTC.
+  ///
+  /// Reads [clock] and normalises it, so a pinned local clock cannot put local
+  /// time on a record that leaves the device.
+  DateTime now() => clock().toUtc();
+
   /// The next position in this launch, consuming it.
   ///
-  /// Public for the same reason [emit] is: a bridge that composes its own
-  /// [LogEvent] cannot number it otherwise, and a record that arrives with the
-  /// default zero sorts ahead of everything else that shares its timestamp.
-  /// Call it once per event.
+  /// Public for the same reason [emit] is: a bridge composing its own
+  /// [LogEvent] has no other way to number it, and a record left at zero sorts
+  /// ahead of everything sharing its timestamp. Call it once per event.
   int nextSequence() => _sequence++;
-
-  /// Arms the debug-only unused-draft guard. Used by [LogDraft].
-  @internal
-  void guardUnused(LogDraft draft) {
-    // One microtask per burst, not one per draft: a frame that logs two hundred
-    // lines should not schedule two hundred callbacks to discover that every one
-    // of them was used.
-    final first = _unchecked == null;
-    (_unchecked ??= <LogDraft>[]).add(draft);
-    if (first) scheduleMicrotask(_reportUnused);
-  }
 
   /// Delivers a user-facing message. Used by [LogDraft].
   @internal
@@ -282,12 +293,14 @@ final class Telemetry {
   R zoned<R>(R Function() body, {TelemetryOptions options = .defaults}) => runTelemetry<R>(
     body,
     options: options,
-    // `debug`, not `info`: a captured `print` is developer output, and `info` is
-    // the usual breadcrumb floor of a crash reporter, which would then ship
-    // whatever was printed, unredacted. Lenient, because a printed line is
-    // whatever somebody printed and was never going to be `Area | op | message`.
-    onPrint: (line) =>
-        LogDraft(this, line, guard: false, lenient: true).meta(const <String, Object?>{'log.source': 'print'}).debug(),
+    // `debug` rather than `info`: a captured `print` is developer output, and
+    // `info` is the usual breadcrumb floor, which would ship it unredacted.
+    // Lenient, because a printed line follows no body convention.
+    onPrint: (line) => LogDraft(
+      this,
+      line,
+      lenient: true,
+    ).meta(const <String, Object?>{'log.source': 'print'}).debug(),
   );
 
   /// Runs [body] with [attributes] on every event logged inside it, across
@@ -295,22 +308,34 @@ final class Telemetry {
   ///
   /// `slog.With`, `ILogger.BeginScope`, Serilog's `LogContext`: the request id,
   /// the route, the controller, named once by the code that knows them. A key
-  /// set at the call site wins over the scope, and an inner scope wins over an
-  /// outer one.
-  R scoped<R>(Map<String, Object?> attributes, R Function() body) => runTelemetryScope<R>(attributes, body);
+  /// set at the call site wins over the scope, and an inner scope over an outer
+  /// one.
+  ///
+  /// Carried by the `Zone`, so it follows an `await` inside [body] and does not
+  /// follow a callback registered outside it. Code that runs later on a timer or
+  /// a stream logs in the scope it was scheduled in.
+  R scoped<R>(Map<String, Object?> attributes, R Function() body) {
+    assert(
+      !strict || firstInvalidKey(attributes) == null,
+      'a scope key is OpenTelemetry-named: lowercase, dot-namespaced, snake_case within a '
+      'segment, at least two segments (rpc.path). Got: ${firstInvalidKey(attributes)}',
+    );
+    return runTelemetryScope<R>(attributes, body);
+  }
 
   /// Writes through every sink that holds events, and waits for them.
   ///
   /// The OpenTelemetry SDK's `ForceFlush`. A sink that throws is reported to the
   /// root zone and does not stop the others.
   Future<void> flush() async {
-    // One set, so a class registered as both a sink and, say, the escalation
-    // destination — which is what a crash reporter usually is — flushes once.
+    // One identity set, so a class registered as both a sink and the escalation
+    // destination, which a crash reporter usually is, flushes once. Two equal
+    // but distinct sinks still flush separately.
     final candidates = <Object?>[..._sinks, toastSink, escalationSink, trackSink, notifySink];
-    final targets = <Flushable>{
-      for (final candidate in candidates)
-        if (candidate is Flushable) candidate,
-    };
+    final targets = Set<Flushable>.identity();
+    for (final candidate in candidates) {
+      if (candidate is Flushable) targets.add(candidate);
+    }
     if (targets.isEmpty) return;
     await Future.wait<void>(targets.map(_flushOne));
   }
@@ -319,15 +344,6 @@ final class Telemetry {
   Future<void> close() async {
     await flush();
     await _events.close();
-  }
-
-  void _reportUnused() {
-    final pending = _unchecked;
-    _unchecked = null;
-    if (pending == null) return;
-    for (final draft in pending) {
-      draft.reportIfUnused();
-    }
   }
 
   Future<void> _flushOne(Flushable target) async {
@@ -340,20 +356,14 @@ final class Telemetry {
 
   void _quick(LogLevel level, Object message, Map<String, Object?>? meta, [Object? error, StackTrace? stackTrace]) {
     if (!isEnabled(level)) return;
-    // `guard: false`: this draft acts before it returns, so the unused-draft
-    // guard has nothing to catch and its bookkeeping is pure cost.
-    final draft = LogDraft(this, message, guard: false);
-    if (meta != null) draft.meta(meta);
-    if (error != null || stackTrace != null) draft.cause(error, stackTrace);
+    // `gated: true`: the check above is the one the draft would repeat.
+    var draft = LogDraft(this, message, gated: true).meta(meta);
+    if (error != null || stackTrace != null) draft = draft.cause(error, stackTrace);
     draft.at(level);
   }
 
   void _verbose(int tier, Object message, Map<String, Object?>? meta) {
     if (!isEnabled(.trace, verbosity: tier)) return;
-    final draft = LogDraft(this, message, guard: false)..verbosity(tier);
-    if (meta != null) draft.meta(meta);
-    draft.trace();
+    LogDraft(this, message, gated: true).verbosity(tier).meta(meta).trace();
   }
-
-  static DateTime _utcNow() => .now().toUtc();
 }

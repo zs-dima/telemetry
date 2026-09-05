@@ -2,7 +2,7 @@
 name: telemetry
 description: One event model for every telemetry channel (console, journal, crash reporting, toasts, analytics), with sinks the application supplies.
 
-version: 0.2.1
+version: 0.3.0
 
 homepage: https://github.com/zs-dima/telemetry
 repository: https://github.com/zs-dima/telemetry
@@ -27,12 +27,12 @@ environment:
   sdk: ^3.13.2
 
 dependencies:
-  # Annotations only. The engine is pure Dart: it has to run in an isolate, in a CLI
-  # and under `dart test`, with no Flutter binding anywhere near it.
+  # Annotations only. The engine is pure Dart, so it runs in an isolate, in a CLI
+  # and under `dart test`, with no Flutter binding.
   meta: ^1.16.0
 
 dev_dependencies:
-  # `package:test`, not `flutter_test`: the engine is pure Dart, so its tests run the way it does.
+  # `package:test` rather than `flutter_test`: the engine is pure Dart, and its tests run the same way.
   test: ^1.25.0
 
   lints_tool:

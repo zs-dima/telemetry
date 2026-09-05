@@ -1,11 +1,12 @@
 import 'package:meta/meta.dart';
+import 'package:telemetry/src/console/icons.dart';
+import 'package:telemetry/src/console/level_tag.dart';
 import 'package:telemetry/src/level.dart';
 
 /// Where the console sink writes.
 enum LogOutput {
-  /// The platform's own console: `stdout` on the VM (when a terminal is
-  /// attached), `window.console` on the web. Keeps browser level filtering
-  /// working.
+  /// The platform's own console: `stdout` on the VM when a terminal is attached,
+  /// `window.console` on the web, where level filtering keeps working.
   platform,
 
   /// `Zone.root.print`: always available, never captured by this package's own
@@ -13,6 +14,9 @@ enum LogOutput {
   print,
 
   /// `dart:developer` `log()`, which the DevTools Logging view reads.
+  ///
+  /// On the web that function is a no-op, since the SDK's dart2js patch has an
+  /// empty body, so the console sink sends this to the browser console.
   developer,
 
   /// Nothing. Used by tests and by release builds that opt out.
@@ -22,8 +26,8 @@ enum LogOutput {
 /// {@template telemetry_options}
 /// Console behaviour for the current zone.
 ///
-/// Zone-scoped rather than global so a test, a background isolate or a nested
-/// `runTelemetry` can tighten or silence output without touching the sinks.
+/// Zone-scoped rather than global, so a test or a nested `runTelemetry` can
+/// tighten or silence output without touching the sinks.
 /// {@endtemplate}
 @immutable
 final class TelemetryOptions {
@@ -41,6 +45,8 @@ final class TelemetryOptions {
     this.showTime = true,
     this.showMillis = false,
     this.developerName = 'app',
+    this.levelTag = LevelTag.bracketed,
+    this.icon,
   });
 
   /// Events below this level are not rendered to the console; other sinks are
@@ -53,14 +59,19 @@ final class TelemetryOptions {
   /// Whether `print` inside the telemetry zone becomes an event.
   final bool handlePrint;
 
-  /// ANSI colours, where the destination renders them.
+  /// ANSI colours, where the destination renders them: the level tag in its
+  /// level's colour, the time and the attribute keys dimmed, nothing else.
   ///
-  /// The sink turns them off by itself for a browser console, for DevTools, and
-  /// for a terminal that says it does not want them (`NO_COLOR`, `TERM=dumb`);
-  /// this only has to say whether they are wanted at all.
+  /// The sink turns them off by itself for a browser console, DevTools, a file,
+  /// a pipe, and wherever the environment says so. This only says whether they
+  /// are wanted at all.
   final bool printColors;
 
   /// Whether the console sink writes in release builds.
+  ///
+  /// Release means `dart.vm.product`, which Flutter and `dart compile` define in
+  /// release. A plain `dart run` never does, so a pure-Dart binary counts as a
+  /// debug build here and writes regardless.
   final bool outputInRelease;
 
   /// Console destination.
@@ -69,21 +80,35 @@ final class TelemetryOptions {
   /// Whether the rendered line is prefixed with a timestamp.
   final bool showTime;
 
-  /// Whether that timestamp carries milliseconds. Off by default: the extra four
-  /// characters are only worth it when ordering inside a second is the question.
+  /// Whether that timestamp carries milliseconds. Off by default; worth it when
+  /// ordering inside one second is the question.
   final bool showMillis;
+
+  /// The text that says the level: `[I]` by default, `LevelTag.letter` for the
+  /// bare `I` where colour carries the level, `LevelTag.word` for `INFO`,
+  /// `LevelTag.glyph` for `💡`, or a map of the app's own.
+  final LevelTag levelTag;
+
+  /// A glyph for the subsystem after the level tag: `const AreaIcons({...})`,
+  /// one per area, with the word for the area dropped since the glyph says it.
+  /// Null adds nothing.
+  ///
+  /// The console only: the journal, the crash reporter and the breadcrumb trail
+  /// are given [LogEvent.body], which stays `Area | operation | message`. A
+  /// glyph in the body would reach all three and take the place of the area.
+  final ConsoleIcon? icon;
 
   /// The logger name `dart:developer` shows in the DevTools Logging view.
   ///
-  /// Read once, when the `developer` delegate is first built.
+  /// Part of the key the sink caches delegates under, so a zone that renames the
+  /// logger gets its own.
   final String developerName;
 
   /// Whether the console sink should render an event of [level]/[verbosity].
   ///
-  /// [maxVerbosity] gates `trace` only: verbosity is the noise dial of tracing,
-  /// so a tier set on a warning must not hide the warning. [release] is the
-  /// build kind, passed in rather than read from the environment so a test can
-  /// pin the release behaviour.
+  /// [maxVerbosity] gates `trace` only, so a tier set on a warning cannot hide
+  /// the warning. [release] is passed in rather than read from the environment,
+  /// so a test can pin it.
   bool renders(LogLevel level, int verbosity, {bool release = false}) {
     if (release && !outputInRelease) return false;
     return level >= minLevel && (level != .trace || verbosity <= maxVerbosity);
@@ -100,6 +125,8 @@ final class TelemetryOptions {
     bool? showTime,
     bool? showMillis,
     String? developerName,
+    LevelTag? levelTag,
+    ConsoleIcon? icon,
   }) => .new(
     minLevel: minLevel ?? this.minLevel,
     maxVerbosity: maxVerbosity ?? this.maxVerbosity,
@@ -110,5 +137,7 @@ final class TelemetryOptions {
     showTime: showTime ?? this.showTime,
     showMillis: showMillis ?? this.showMillis,
     developerName: developerName ?? this.developerName,
+    levelTag: levelTag ?? this.levelTag,
+    icon: icon ?? this.icon,
   );
 }

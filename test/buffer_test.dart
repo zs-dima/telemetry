@@ -1,6 +1,15 @@
 import 'package:telemetry/telemetry.dart';
 import 'package:test/test.dart';
 
+LogEvent _event(String body, {LogLevel level = .info, int verbosity = 0, int sequence = 0}) => .new(
+  level: level,
+  body: body,
+  verbosity: verbosity,
+  sequence: sequence,
+  timestamp: DateTime.now().toUtc(),
+  runId: 'run',
+);
+
 void main() {
   group('LogBuffer', () {
     test('keeps everything from its floor up until the journal takes over', () {
@@ -22,10 +31,18 @@ void main() {
       expect(buffer.guarantees(.warn, 6), isTrue, reason: 'verbosity is the noise dial of tracing, nothing else');
     });
 
-    test('a whisper above the ceiling is never built at all', () {
-      // Without the ceiling the quietest tiers are the loudest by volume, and
-      // they evict the tier somebody is actually reading.
-      final pipeline = Telemetry(runId: 'run-v', buffer: LogBuffer(limit: 4, maxVerbosity: 3));
+    test('traceLimit: 0 refuses trace altogether', () {
+      // The only setting that turns tracing off: a `trace()` with no tier has
+      // verbosity 0, which every `maxVerbosity` admits.
+      final buffer = LogBuffer(traceLimit: 0);
+
+      expect(buffer.guarantees(.trace), isFalse);
+      expect(buffer.guarantees(.trace, 6), isFalse);
+      expect(buffer.guarantees(.info), isTrue);
+    });
+
+    test('a trace above the ceiling is never built', () {
+      final pipeline = Telemetry(runId: 'run-v', buffer: LogBuffer(maxVerbosity: 3));
       var evaluated = false;
 
       expect(pipeline.isEnabled(.trace, verbosity: 6), isFalse);
@@ -34,28 +51,77 @@ void main() {
         return 'Control | dispose | quiet';
       });
       expect(evaluated, isFalse);
+    });
+
+    test('tracing cannot evict the boot', () {
+      // Why the rings are separate: one `v1` per frame used to push the boot's
+      // `info` lines out of a shared ring within a second.
+      final buffer = LogBuffer(limit: 4, traceLimit: 2);
+      final pipeline = Telemetry(runId: 'run-b', buffer: buffer)
+        ..i('Boot | environment | loaded')
+        ..i('Boot | database | opened');
+      for (var frame = 0; frame < 50; frame++) {
+        pipeline.v1('Control | frame | built');
+      }
+
+      expect(
+        buffer.events.where((event) => event.level == .info).map((event) => event.body),
+        equals(<String>['Boot | environment | loaded', 'Boot | database | opened']),
+      );
+      expect(buffer.events.where((event) => event.level == .trace), hasLength(2), reason: 'the noise evicts itself');
+    });
+
+    test('the two rings come out in the order they happened', () {
+      final buffer = LogBuffer(limit: 4, traceLimit: 4);
+      Telemetry(runId: 'run-o', buffer: buffer)
+        ..i('Boot | step | one')
+        ..v1('Control | frame | a')
+        ..i('Boot | step | two')
+        ..v1('Control | frame | b');
+
+      expect(
+        buffer.events.map((event) => event.body),
+        equals(<String>['Boot | step | one', 'Control | frame | a', 'Boot | step | two', 'Control | frame | b']),
+      );
+      expect(buffer.events.map((event) => event.sequence), equals(<int>[0, 1, 2, 3]));
+    });
+
+    test('the drain leaves the trace ring alone', () {
+      final buffer = LogBuffer(limit: 4, traceLimit: 4);
+      final pipeline = Telemetry(runId: 'run-d', buffer: buffer)
+        ..i('Boot | step | one')
+        ..v1('Control | frame | a');
+
+      buffer.markDrained();
+      expect(buffer.events.map((event) => event.body), equals(<String>['Control | frame | a']));
 
       pipeline
-        ..v1('Control | frame | built')
-        ..v6('Control | dispose | quiet')
-        ..v3('Control | build | scheduled');
+        ..i('Users | list | ok')
+        ..v1('Control | frame | b');
       expect(
-        pipeline.buffer.events.map((event) => event.verbosity),
-        equals(<int>[1, 3]),
-        reason: 'the loud tiers keep their places in the ring',
+        buffer.events.map((event) => event.body),
+        equals(<String>['Control | frame | a', 'Control | frame | b']),
+        reason: 'the journal has the rest',
       );
     });
 
-    test('the ring drops the oldest first and clear empties it', () {
-      final buffer = LogBuffer(limit: 2);
-      for (final body in <String>['Boot | step | one', 'Boot | step | two', 'Boot | step | three']) {
-        buffer.add(LogEvent(level: .info, body: body, timestamp: DateTime.now().toUtc(), runId: 'run'));
+    test('each ring drops the oldest first, and clear empties both', () {
+      final buffer = LogBuffer(limit: 2, traceLimit: 1);
+      for (final (index, body) in <String>['Boot | step | one', 'Boot | step | two', 'Boot | step | three'].indexed) {
+        buffer.add(_event(body, sequence: index));
       }
+      buffer
+        ..add(_event('Control | frame | a', level: .trace, verbosity: 1, sequence: 3))
+        ..add(_event('Control | frame | b', level: .trace, verbosity: 1, sequence: 4));
 
-      expect(buffer.events.map((event) => event.body), equals(<String>['Boot | step | two', 'Boot | step | three']));
-      expect(buffer.length, equals(2));
+      expect(
+        buffer.events.map((event) => event.body),
+        equals(<String>['Boot | step | two', 'Boot | step | three', 'Control | frame | b']),
+      );
+      expect(buffer.length, equals(3));
       buffer.clear();
       expect(buffer.length, isZero);
+      expect(buffer.events, isEmpty);
     });
   });
 }

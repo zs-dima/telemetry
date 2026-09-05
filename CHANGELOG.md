@@ -5,6 +5,108 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-09-05
+
+A correction release: 0.2.x got the shape right and several details wrong. Everything here came out
+of reviewing it against the OpenTelemetry logs data model, `log/slog`, `tracing`, Serilog and
+`Microsoft.Extensions.Logging`, Sentry's structured logs and `package:l`.
+
+### Changed
+
+- **The console line has one colour and two dims.** The level tag is coloured, the time and the
+  attribute keys are faint (`ESC[2m`), and the body, the values and the error stay plain. That is
+  the layout of `tint`, `zerolog`'s console writer and `charmbracelet/log`. Dim follows colour: the
+  sink turns both off for a browser console, DevTools, a pipe or `NO_COLOR`.
+- **`Telemetry.resource` is a field on the record, not a copy in every event's `meta`.**
+  OpenTelemetry keeps `Resource` apart from record `Attributes` because it does not vary per
+  occurrence. `LogEvent.resource` holds the launch map by reference, `meta` is the scope and the
+  call site, and `event.attributes` is the flat projection a sink stores. A console line no longer
+  repeats the app version. **A sink that reads `event.meta` directly and expected the launch
+  attributes there must read `event.attributes`.**
+- **`LogDraft.escalate()` always forwards; the sink decides.** It used to swallow an escalation of
+  an event at `error` or above, guessing the reporting sink had captured it. That is
+  `ReportingSink.captureLevel`'s decision, and with a higher floor the request reached the reporter
+  zero times. `ReportThrottle`, shared by both paths under one identity, makes a second send free
+  without spending a per-minute slot.
+- **`ReportingSink.enabled` consults both floors.** It gated on `breadcrumbLevel` alone, so
+  `captureLevel` could only narrow what the trail admitted and a quiet-trail-loud-capture reporter
+  captured nothing. `handle` now applies each floor separately.
+- **The unused-draft guard is the analyzer.** Every builder (`meta`, `cause`, `description`, `name`,
+  `verbosity`) and `Telemetry.call` are `@useResult`, so a dropped draft is an `unused_result`
+  where it is written. The runtime guard is gone: it could not tell a draft held across an `await`
+  from a forgotten one, and reported the difference a microtask later, into the pipeline.
+- **The body convention is checked at the call site**, synchronously and whatever the level, rather
+  than at snapshot. For a channel-only draft that was inside a microtask, and it was skipped
+  entirely when nothing consumed the level. `name`, analytics names and trace tiers are checked
+  too, and every check is a plain `assert` rather than an `ArgumentError`.
+- **A channel that throws is isolated**, reported once to the root zone like a failing sink. A toast
+  whose messenger had gone away used to escape as an uncaught error, which the app's own handler
+  filed as a defect, and cancel the channels after it.
+- **`toast()` resolves its text at the fan-out**, so a description set after it is still the one the
+  user sees, and a toast with no text at all falls back to the body with a diagnostic rather than
+  asserting from a microtask.
+- **`Telemetry.events` is an observer.** A listener no longer makes every level and tier "enabled",
+  which had quietly undone `LogBuffer.maxVerbosity` for any app with a debug overlay.
+- **`LogBuffer` keeps two rings**, `limit` for `minLevel` and up and the new `traceLimit` (default
+  100) for `trace`, merged by `sequence` when read. One `v1` per frame used to evict the boot from a
+  shared ring before the journal could drain it. `traceLimit: 0` refuses trace outright, which
+  `maxVerbosity` never could.
+- **`LogOutput.developer` reaches the browser console on the web**, where `dart:developer`'s `log()`
+  is a no-op and every line was being dropped.
+- **The ANSI decision is a policy rather than a guess.** `NO_COLOR` wins over an attached terminal,
+  `FORCE_COLOR` turns colours on, and a run without a terminal only gets them on a phone. A
+  redirect to a file was collecting escape codes.
+- **Console values are escaped, not just quoted.** A carriage return, a tab, a backslash and every
+  other control character are escaped; an ESC in a value can no longer drive the terminal. The body
+  and the error text get the same treatment.
+- **`print` output wraps at 1000 code units**, never through a surrogate pair. The old 800 cited
+  `debugPrintThrottled`, which throttles to 12 KB/s and does not wrap unless asked; the real limit
+  is Android's ~4 KB per call.
+- **`removeSink` and `flush` compare by identity**, so two sinks that happen to be equal are still
+  two destinations.
+- `ReportThrottle` prunes its dedupe map before the ceiling check rather than after, so it prunes
+  during the storm it exists to survive; it asserts that one instance measures on one clock.
+- The print capture re-enters the zone `print` was called in, so a captured line keeps the scope it
+  was printed in.
+- A lazy body may return any `Object`, not only a `String`.
+- `track`/`notify` copy their payload at the call rather than reading it at the fan-out.
+- `Telemetry.clock` may answer in local time: `now()` normalises to UTC.
+
+### Added
+
+- **`TelemetryOptions.levelTag`**: the text that says the level, in its level's colour where the
+  destination renders colour. `LevelTag.bracketed` (`[I]`, the default), `.letter` (`I`), `.word`
+  (`INFO`), `.glyph` (`💡`), or a map of the app's own.
+- **`TelemetryOptions.icon`**: the subsystem's glyph after the level tag. `AreaIcons({'Boot': '🏗',
+  ...})` looks it up by area and drops the word it already says: `I 🪢 lifecycle | disposed`. The
+  console only: the body a journal and a crash reporter are given is unchanged.
+- `kAttributeKey`, `kEventName` and `kTrackName` are exported, so an application's source-scanning
+  test can assert the rule the runtime asserts rather than a copy of it that drifts.
+- `LogEvent.resource` and `copyWith(resource:)`; `LogEvent.attributes` is computed once and cached.
+- `LogBuffer.traceLimit`.
+- `ansiSupport(...)`, the ANSI policy as a pure function, so it can be tested rather than guessed at.
+- `PrintConsoleDelegate`, `IgnoreConsoleDelegate`, `DeveloperConsoleDelegate`, `wrapForPrint` and
+  `kPrintWrapWidth` are exported. The package's own tests had to reach into `src/` for them.
+- `make bench`, a compiled micro-benchmark of the hot paths, and the numbers in the README.
+- `test/analyzer_guard_test.dart`: runs the analyzer over a fixture to prove `unused_result` fires
+  on a dropped builder and not on a closed draft; `dart_test.yaml` declares the `analyzer` tag it
+  runs under, and `.pubignore` keeps `tool/` and that fixture out of the published archive.
+
+### Removed
+
+- `LogDraft.sentry()`, deprecated in 0.2.0.
+- The runtime unused-draft report and `Telemetry.guardUnused`.
+
+### Fixed
+
+- The disabled fluent path read the clock before the gate.
+- The quick path asked every sink twice whether it wanted a level.
+- A builder called after the log action was silently ignored; it now asserts, and a second log
+  action returns the first event instead of emitting a second one in release.
+- `traceContext` was read at snapshot, so a channel-only draft got the trace of a microtask later,
+  when the span it belonged to may have ended.
+- Every draft allocated a channel list it usually never used.
+
 ## [0.2.1] - 2026-09-05
 
 ### Changed

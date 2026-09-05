@@ -3,20 +3,23 @@ import 'dart:async';
 import 'package:telemetry/src/console/delegate.dart';
 import 'package:telemetry/src/level.dart';
 
-/// How long a printed line may be before it is split.
+/// How long a printed line may be before it is split, in UTF-16 code units.
 ///
-/// Android's logger rate-limits and drops output, which is why Flutter's own
-/// `debugPrintThrottled` wraps at this width. A release build with the console
-/// on is read through `adb logcat`, and the line that gets dropped there is the
-/// stack trace of the failure being chased.
-const int kPrintWrapWidth = 800;
+/// Android's logger takes about 4 KB per call and truncates the rest, and what
+/// gets truncated in `adb logcat` is the stack trace being chased. A thousand
+/// code units stays under 4 KB even at three bytes per character in UTF-8.
+///
+/// Flutter's `debugPrintThrottled` solves the neighbouring problem, pacing
+/// output to 12 KB per second, and wraps only when a caller passes a width.
+/// This is the width, not the pace: a console sink should not hold lines back.
+const int kPrintWrapWidth = 1000;
 
 /// {@template print_console_delegate}
 /// Writes through `Zone.root.print`, one call per line and per
-/// [kPrintWrapWidth] characters.
+/// [kPrintWrapWidth] code units.
 ///
-/// The root zone: the print interceptor lives in a child zone, so printing from
-/// here can never be captured and fed back as a new event.
+/// The print interceptor lives in a child zone, so printing from the root can
+/// never be captured and fed back as a new event.
 /// {@endtemplate}
 final class PrintConsoleDelegate implements ConsoleDelegate {
   /// {@macro print_console_delegate}
@@ -35,11 +38,10 @@ final class PrintConsoleDelegate implements ConsoleDelegate {
 }
 
 /// Splits [line] into the pieces one `print` call may carry: one per newline,
-/// then one per [kPrintWrapWidth] characters.
+/// then one per [kPrintWrapWidth] code units, never through a surrogate pair.
 ///
-/// A function rather than a private step, because `Zone.root.print` cannot be
-/// intercepted — that is the whole reason for using it — so this is the seam a
-/// test can hold.
+/// A function rather than a private step: `Zone.root.print` cannot be
+/// intercepted, which is the reason for using it, so this is the test seam.
 List<String> wrapForPrint(String line) {
   final pieces = <String>[];
   for (final part in line.split('\n')) {
@@ -47,17 +49,26 @@ List<String> wrapForPrint(String line) {
       pieces.add(part);
       continue;
     }
-    for (var start = 0; start < part.length; start += kPrintWrapWidth) {
-      final end = start + kPrintWrapWidth;
+    var start = 0;
+    while (start < part.length) {
+      var end = start + kPrintWrapWidth;
+      if (end >= part.length) {
+        end = part.length;
+      } else if (_isHighSurrogate(part.codeUnitAt(end - 1))) {
+        // The cut landed between the halves of one character. Split a unit
+        // earlier, so no piece carries a lone surrogate the console's UTF-8
+        // encoder would turn into U+FFFD.
+        end -= 1;
+      }
       // ignore: avoid-substring
-      pieces.add(part.substring(start, end < part.length ? end : part.length));
+      pieces.add(part.substring(start, end));
+      start = end;
     }
   }
   return pieces;
 }
 
+bool _isHighSurrogate(int unit) => unit >= 0xD800 && unit <= 0xDBFF;
+
 /// Fallback used when no platform library is available.
 ConsoleDelegate createConsoleDelegate() => const PrintConsoleDelegate();
-
-/// `print` reaches a terminal or `flutter run`, both of which render ANSI.
-bool supportsAnsi() => true;

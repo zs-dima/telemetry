@@ -1,10 +1,12 @@
-/// The delegate used when neither `dart:io` nor `dart:js_interop` is
-/// available.
+/// The delegate used when neither `dart:io` nor `dart:js_interop` is available.
 ///
 /// A separate library rather than a second import of the print delegate: a
-/// conditional import needs its default to be a distinct URI from any named
-/// import of the same file.
+/// conditional import needs a default URI distinct from its named imports.
 library;
 
 export 'package:telemetry/src/console/delegate_print.dart'
-    show PrintConsoleDelegate, createConsoleDelegate, supportsAnsi, wrapForPrint;
+    show PrintConsoleDelegate, createConsoleDelegate, wrapForPrint;
+
+/// No, on a platform this package has never met: an escape written where it
+/// cannot be rendered stays there forever.
+bool supportsAnsi() => false;

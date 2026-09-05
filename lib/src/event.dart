@@ -4,10 +4,15 @@ import 'package:telemetry/src/level.dart';
 /// {@template log_event}
 /// One thing that happened, in the shape every channel can consume.
 ///
-/// An OpenTelemetry log record: a stable, language-neutral [body] plus
-/// structured [meta] attributes. The body groups issues in a crash reporter and
-/// is what a human greps for; the attributes are what a query filters on.
-/// Interpolating `'refused for user $id'` into the body destroys both.
+/// An OpenTelemetry log record: a stable [body] plus structured attributes. The
+/// body groups issues in a crash reporter and is what a human greps for; the
+/// attributes are what a query filters on. Interpolating `'refused for user
+/// $id'` into the body destroys both.
+///
+/// The attributes arrive in two fields, as in OpenTelemetry. [resource]
+/// identifies the source and is the same object on every event of a launch,
+/// [meta] is what this occurrence said, and [attributes] is the flat projection
+/// a sink stores.
 /// {@endtemplate}
 @immutable
 final class LogEvent {
@@ -18,6 +23,7 @@ final class LogEvent {
     required this.timestamp,
     required this.runId,
     Map<String, Object?> meta = const <String, Object?>{},
+    this.resource = const <String, Object?>{},
     this.error,
     this.stackTrace,
     this.description,
@@ -39,21 +45,32 @@ final class LogEvent {
 
   /// A stable identifier for this kind of event, independent of [body].
   ///
-  /// OpenTelemetry's `EventName`, .NET's `EventId`, the "error slug" of wide
-  /// events: `pairing.handshake.refused`, lowercase and dot-separated. The body
-  /// is prose and gets copy-edited; anything that keys on it — a crash
-  /// reporter's fingerprint, `ReportThrottle` — then treats the edit as a new
-  /// failure. Set this and those keys stop moving.
+  /// OpenTelemetry's `EventName`, .NET's `EventId`, the error slug of wide
+  /// events: `pairing.handshake.refused`. The body is prose and gets
+  /// copy-edited, and a crash reporter's fingerprint or `ReportThrottle` then
+  /// reads that edit as a new failure. Set this and those keys stop moving.
   final String? name;
 
-  /// Structured attributes, OpenTelemetry-named (lowercase, dot-namespaced,
-  /// snake_case within a segment): `app.pairing.attempt`, `rpc.path`,
-  /// `control.duration_ms`.
+  /// What this occurrence said: the ambient scope, then the call site's own
+  /// `.meta({...})`, the call site winning.
   ///
-  /// Values are scalars (`String`, `num`, `bool`), lists or maps of scalars, or
-  /// anything whose `toString()` a sink can store. A sink is free to serialize
-  /// them however it stores rows; nothing here promises a JSON shape.
+  /// OpenTelemetry-named: lowercase, dot-namespaced, snake_case within a
+  /// segment, as in `app.pairing.attempt`. A value is a scalar, a list or map of
+  /// scalars, or anything whose `toString()` a sink can store; nothing here
+  /// promises a JSON shape.
+  ///
+  /// The launch attributes live in [resource], so a console line carries what
+  /// varies and nothing else.
   final Map<String, Object?> meta;
+
+  /// What identifies the launch: `app.version`, `app.environment`, a device
+  /// model.
+  ///
+  /// OpenTelemetry's `Resource`, kept apart from [meta] because it does not vary
+  /// per occurrence. The same map object travels on every event, at one
+  /// reference each. `Telemetry.resource` makes it unmodifiable; code that
+  /// builds a [LogEvent] by hand must not mutate what it passes here.
+  final Map<String, Object?> resource;
 
   /// The error this event is about, if any.
   final Object? error;
@@ -63,31 +80,30 @@ final class LogEvent {
 
   /// User-facing, localized text.
   ///
-  /// Separate from [body]: a journal and a crash reporter need a stable English
-  /// line, a toast needs the user's language, and one event carries both.
+  /// Separate from [body]: a journal and a crash reporter need stable English, a
+  /// toast needs the user's language, and one event carries both.
   final String? description;
 
-  /// When it happened, in UTC. Local time is a rendering choice; a stamp that
-  /// leaves the device (report, e-mail, export) must never be local.
+  /// When it happened, in UTC. Local time is a rendering choice, and a stamp
+  /// that leaves the device must never be local.
   final DateTime timestamp;
 
   /// Position of this event in its launch, from zero.
   ///
-  /// `package:logging`'s `sequenceNumber` and `dart:developer`'s: a total order
-  /// that survives a timestamp with second resolution and two events inside one
-  /// millisecond. A journal sorts by `(timestamp, sequence)`.
+  /// `package:logging`'s `sequenceNumber`: a total order that survives two
+  /// events inside one millisecond. A journal sorts by `(timestamp, sequence)`.
   final int sequence;
 
   /// Identifier of the app launch this event belongs to.
   ///
   /// Usable as a crash-reporter tag, so a report can be joined to the lines that
-  /// led to it, including those of an earlier launch.
+  /// led to it, including an earlier launch's.
   final String runId;
 
   /// W3C trace id of the trace in flight when this was logged, if any.
   ///
-  /// The OpenTelemetry log record's `TraceId`. Filled from
-  /// `Telemetry.traceContext`; nothing here starts or ends a span.
+  /// The log record's `TraceId`, read from `Telemetry.traceContext` at the
+  /// moment the call site acted. Nothing here starts or ends a span.
   final String? traceId;
 
   /// W3C span id of the span in flight when this was logged, if any.
@@ -97,17 +113,19 @@ final class LogEvent {
   /// `TelemetryOptions.maxVerbosity` and `LogBuffer.maxVerbosity`.
   final int verbosity;
 
-  /// First `|`-separated segment of [body]: the subsystem.
-  String get area => _segment(0);
-
-  /// Second `|`-separated segment of [body]: the operation.
-  String get operation => _segment(1);
-
-  /// [meta] plus the attributes derived from [name] and [error].
+  /// Everything a sink stores: [resource], then [meta], plus the attributes
+  /// derived from [name] and [error].
   ///
-  /// The stack trace is not among them: journal rows and crash reports have a
-  /// dedicated field for it, and an attribute copy would duplicate it.
-  Map<String, Object?> get attributes => <String, Object?>{
+  /// A sink that writes one column, one tag set or one JSON blob wants this; a
+  /// console showing what varies wants [meta]. [meta] wins over [resource] on a
+  /// shared key, and both fields keep their own value.
+  ///
+  /// The stack trace is not included: journal rows and crash reports have a
+  /// field of their own for it.
+  ///
+  /// Built once on first read, since an immutable record has one answer.
+  late final Map<String, Object?> attributes = <String, Object?>{
+    ...resource,
     ...meta,
     if (name case final String value) 'event.name': value,
     if (error case final Object e) ...<String, Object?>{
@@ -116,15 +134,23 @@ final class LogEvent {
     },
   };
 
+  /// First `|`-separated segment of [body]: the subsystem.
+  String get area => _segment(0);
+
+  /// Second `|`-separated segment of [body]: the operation.
+  String get operation => _segment(1);
+
   /// A copy with the given fields replaced.
   ///
-  /// For a bridge that adopts a foreign record and for a sink that enriches one
-  /// before forwarding. A null argument means "keep": this cannot clear a field.
+  /// For a bridge that adopts a foreign record, or a sink that enriches one
+  /// before forwarding. A null argument keeps the current value, so this cannot
+  /// clear a field.
   LogEvent copyWith({
     LogLevel? level,
     String? body,
     String? name,
     Map<String, Object?>? meta,
+    Map<String, Object?>? resource,
     Object? error,
     StackTrace? stackTrace,
     String? description,
@@ -142,6 +168,7 @@ final class LogEvent {
     sequence: sequence ?? this.sequence,
     runId: runId ?? this.runId,
     meta: meta ?? this.meta,
+    resource: resource ?? this.resource,
     error: error ?? this.error,
     stackTrace: stackTrace ?? this.stackTrace,
     description: description ?? this.description,

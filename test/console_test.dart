@@ -1,5 +1,4 @@
 import 'package:telemetry/src/console/ansi.dart';
-import 'package:telemetry/src/console/delegate_print.dart' as print_delegate;
 import 'package:telemetry/src/console/delegate_vm.dart' as vm_delegate;
 import 'package:telemetry/telemetry.dart';
 import 'package:test/test.dart';
@@ -16,8 +15,20 @@ final class _Recording implements ConsoleDelegate {
 /// The instant every rendered line in this suite is stamped with.
 final DateTime _at = DateTime.utc(2026, 9, 5, 14, 3, 7, 42);
 
-LogEvent _event({LogLevel level = .info, Map<String, Object?> meta = const <String, Object?>{}}) =>
-    .new(level: level, body: 'Rpc | call | ok', meta: meta, timestamp: _at, runId: 'run');
+LogEvent _event({
+  LogLevel level = .info,
+  Map<String, Object?> meta = const <String, Object?>{},
+  Map<String, Object?> resource = const <String, Object?>{},
+  String? name,
+}) => .new(
+  level: level,
+  body: 'Rpc | call | ok',
+  name: name,
+  meta: meta,
+  resource: resource,
+  timestamp: _at,
+  runId: 'run',
+);
 
 void main() {
   group('rendering', () {
@@ -47,11 +58,73 @@ void main() {
       );
     });
 
-    test('a newline inside a value stays on the line', () {
-      final line = ConsoleSink.render(_event(meta: const <String, Object?>{'log.message': 'first\nsecond'}), plain);
+    test('a backslash is escaped whenever the value is quoted', () {
+      expect(
+        ConsoleSink.render(_event(meta: const <String, Object?>{'db.path': r'C:\Program Files\app'}), plain),
+        equals(r'[I] Rpc | call | ok db.path="C:\\Program Files\\app"'),
+      );
+    });
 
-      expect(line, equals(r'[I] Rpc | call | ok log.message="first\nsecond"'));
+    test('every character that would break the line is escaped', () {
+      final line = ConsoleSink.render(
+        _event(
+          meta: const <String, Object?>{
+            'log.newline': 'first\nsecond',
+            // Unescaped, a carriage return overwrites the start of the line
+            // that is being read.
+            'log.carriage': 'first\rsecond',
+            'log.tab': 'a\tb',
+            // An escape sequence in a value would otherwise drive the
+            // terminal it is printed to.
+            'log.escape': '\u001b[2Jcleared',
+          },
+        ),
+        plain,
+      );
+
+      expect(
+        line,
+        equals(
+          r'[I] Rpc | call | ok log.newline="first\nsecond" log.carriage="first\rsecond" '
+          r'log.tab="a\tb" log.escape="\u001b[2Jcleared"',
+        ),
+      );
       expect(line.contains('\n'), isFalse, reason: 'one event is one greppable line');
+      expect(line.contains('\r'), isFalse);
+      expect(line.contains('\u001b'), isFalse, reason: 'nothing in a value may reach the terminal as a command');
+    });
+
+    test('the body and the error text are sanitised too, and the stack trace is not', () {
+      // A bridged body or a captured `print` can carry a newline, and an
+      // exception's message is not composed by the app.
+      final line = ConsoleSink.render(
+        LogEvent(
+          level: .error,
+          body: 'Bridge | forwarded | first\nsecond',
+          error: const FormatException('bad\rinput'),
+          stackTrace: StackTrace.fromString('#0 one\n#1 two'),
+          timestamp: _at,
+          runId: 'run',
+        ),
+        plain,
+      );
+
+      expect(line, startsWith(r'[E] Bridge | forwarded | first\nsecond | FormatException: bad\rinput'));
+      expect(line, endsWith('\n#0 one\n#1 two'), reason: 'only the trace may be multi-line');
+    });
+
+    test('the event name leads the attributes and the launch resource is absent', () {
+      expect(
+        ConsoleSink.render(
+          _event(
+            name: 'sync.upload.refused',
+            meta: const <String, Object?>{'http.status_code': 429},
+            resource: const <String, Object?>{'app.version': '1.0.0'},
+          ),
+          plain,
+        ),
+        equals('[I] Rpc | call | ok event.name=sync.upload.refused http.status_code=429'),
+      );
     });
 
     test('the time is local, and milliseconds are opt-in', () {
@@ -66,11 +139,23 @@ void main() {
       );
     });
 
-    test('colours wrap the level prefix and nothing else', () {
-      final line = ConsoleSink.render(_event(level: .error), const TelemetryOptions(showTime: false));
+    test('colour is the tag, dim is the time and the keys, and nothing else', () {
+      // The layout of `tint`, `zerolog` and `charmbracelet/log`: the level's
+      // colour on the tag, the parts that repeat faint, the body and the values
+      // bare.
+      final line = ConsoleSink.render(
+        _event(level: .error, meta: const <String, Object?>{'rpc.path': '/auth.v1/SignIn'}, name: 'rpc.failed'),
+        .defaults,
+      );
 
-      expect(line, startsWith(kEsc));
-      expect(line, contains('$kReset Rpc | call | ok'));
+      expect(line, startsWith(kDim));
+      expect(
+        line,
+        endsWith(
+          '$kReset ${kEsc}31m[E]$kReset Rpc | call | ok '
+          '${kDim}event.name=${kReset}rpc.failed ${kDim}rpc.path=$kReset/auth.v1/SignIn',
+        ),
+      );
       for (final level in LogLevel.values) {
         expect(colorize(level, 'x'), allOf(startsWith(kEsc), endsWith(kReset)), reason: '${level.name} has a style');
       }
@@ -89,6 +174,136 @@ void main() {
         ..i('Rpc | call | ok');
 
       expect(lines.single, equals('json:[I] Rpc | call | ok'));
+    });
+  });
+
+  group('level tag', () {
+    const plain = TelemetryOptions(printColors: false, showTime: false);
+
+    test('bracketed is the default', () {
+      expect(ConsoleSink.render(_event(), plain), equals('[I] Rpc | call | ok'));
+    });
+
+    test('each preset has one text per level, and the texts of a preset are one width', () {
+      for (final (tag, width) in <(LevelTag, int)>[(LevelTag.bracketed, 3), (LevelTag.letter, 1), (LevelTag.word, 5)]) {
+        final texts = <String>[for (final level in LogLevel.values) tag.of(level)];
+        expect(texts.toSet(), hasLength(LogLevel.values.length));
+        expect(texts.map((text) => text.length).toSet(), equals(<int>{width}), reason: '$texts');
+      }
+      final glyphs = <String>[for (final level in LogLevel.values) LevelTag.glyph.of(level)];
+      expect(glyphs.toSet(), hasLength(LogLevel.values.length));
+    });
+
+    test('the letter drops the brackets, the word spells the level out, the glyph draws it', () {
+      expect(ConsoleSink.render(_event(), plain.copyWith(levelTag: .letter)), equals('I Rpc | call | ok'));
+      expect(
+        ConsoleSink.render(_event(level: .warn), plain.copyWith(levelTag: .word)),
+        equals('WARN  Rpc | call | ok'),
+      );
+      expect(
+        ConsoleSink.render(_event(level: .error), plain.copyWith(levelTag: .glyph)),
+        equals('🚫 Rpc | call | ok'),
+      );
+    });
+
+    test('a set of the app itself falls back to the bracketed letter', () {
+      // ignore: avoid-missing-enum-constant-in-map, the fallback is what is under test
+      const own = LevelTag(<LogLevel, String>{.info: 'ℹ'});
+      expect(ConsoleSink.render(_event(), plain.copyWith(levelTag: own)), equals('ℹ Rpc | call | ok'));
+      expect(ConsoleSink.render(_event(level: .error), plain.copyWith(levelTag: own)), equals('[E] Rpc | call | ok'));
+    });
+
+    test('the colour wraps whatever the tag is', () {
+      final line = ConsoleSink.render(
+        _event(level: .error),
+        const TelemetryOptions(showTime: false, levelTag: .glyph),
+      );
+      expect(line, equals('${kEsc}31m🚫$kReset Rpc | call | ok'));
+    });
+  });
+
+  group('icons', () {
+    const plain = TelemetryOptions(printColors: false, showTime: false);
+    const areas = AreaIcons(<String, String>{'Rpc': '🌍', 'Control': '🪢'});
+
+    LogEvent lined(String body, {LogLevel level = .info}) =>
+        .new(level: level, body: body, timestamp: _at, runId: 'run');
+
+    test('no scheme adds nothing', () {
+      expect(ConsoleSink.render(lined('Rpc | call | ok'), plain), equals('[I] Rpc | call | ok'));
+    });
+
+    test('an area scheme keeps the level tag, adds the glyph and drops the word', () {
+      // The tag says the level, the glyph says the subsystem; neither can
+      // stand in for the other.
+      expect(
+        ConsoleSink.render(lined('Control | lifecycle | disposed'), plain.copyWith(icon: areas)),
+        equals('[I] 🪢 lifecycle | disposed'),
+      );
+      expect(
+        ConsoleSink.render(lined('Control | handler | failed', level: .error), plain.copyWith(icon: areas)),
+        equals('[E] 🪢 handler | failed'),
+      );
+    });
+
+    test('a level glyph and an area glyph sit side by side', () {
+      // Severity in the tag's column, subsystem after it, where a `package:l`
+      // log put an emoji in the text.
+      expect(
+        ConsoleSink.render(
+          lined('Control | lifecycle | disposed'),
+          plain.copyWith(levelTag: .glyph, icon: areas),
+        ),
+        equals('💡 🪢 lifecycle | disposed'),
+      );
+    });
+
+    test('an unmapped area gets no glyph and keeps its word', () {
+      expect(
+        ConsoleSink.render(lined('Pairing | handshake | ok'), plain.copyWith(icon: areas)),
+        equals('[I] Pairing | handshake | ok'),
+      );
+    });
+
+    test('replacesArea: false keeps the word beside the glyph', () {
+      const kept = AreaIcons(<String, String>{'Control': '🪢'}, replacesArea: false);
+      expect(
+        ConsoleSink.render(lined('Control | lifecycle | disposed'), plain.copyWith(icon: kept)),
+        equals('[I] 🪢 Control | lifecycle | disposed'),
+      );
+    });
+
+    test('a body with no area is never cut', () {
+      // A bridged line or a captured `print` has no `|` to drop.
+      const anything = AreaIcons(<String, String>{'whatever was printed': '🪢'});
+      expect(
+        ConsoleSink.render(lined('whatever was printed'), plain.copyWith(icon: anything)),
+        equals('[I] 🪢 whatever was printed'),
+      );
+    });
+
+    test('the level tag keeps its colour next to an area glyph', () {
+      final line = ConsoleSink.render(
+        lined('Control | handler | failed', level: .error),
+        const TelemetryOptions(showTime: false, levelTag: .letter, icon: areas),
+      );
+
+      expect(line, equals('${kEsc}31mE$kReset 🪢 handler | failed'));
+    });
+
+    test('a custom format sees the glyph, because render does the work', () {
+      final lines = <String>[];
+      Telemetry(runId: 'run-icon')
+        ..addSink(
+          ConsoleSink(
+            options: plain.copyWith(icon: areas),
+            delegate: _Recording(lines),
+            format: (event, options) => 'json:${ConsoleSink.render(event, options)}',
+          ),
+        )
+        ..i('Control | lifecycle | disposed');
+
+      expect(lines.single, equals('json:[I] 🪢 lifecycle | disposed'));
     });
   });
 
@@ -122,37 +337,99 @@ void main() {
     });
   });
 
+  group('the ANSI decision', () {
+    bool ansi({
+      bool hasTerminal = false,
+      bool terminalSupportsAnsi = false,
+      Map<String, String> environment = const <String, String>{},
+      bool isMobile = false,
+    }) => vm_delegate.ansiSupport(
+      hasTerminal: hasTerminal,
+      terminalSupportsAnsi: terminalSupportsAnsi,
+      environment: environment,
+      isMobile: isMobile,
+    );
+
+    test('NO_COLOR wins over an attached terminal', () {
+      // The convention is unconditional; consulting it only when there is no
+      // terminal is the same as not honouring it at all.
+      expect(ansi(hasTerminal: true, terminalSupportsAnsi: true), isTrue);
+      expect(
+        ansi(hasTerminal: true, terminalSupportsAnsi: true, environment: const {'NO_COLOR': '1'}),
+        isFalse,
+      );
+    });
+
+    test('FORCE_COLOR turns them on where nothing else would', () {
+      expect(ansi(environment: const {'FORCE_COLOR': '1'}), isTrue);
+      expect(
+        ansi(environment: const {'FORCE_COLOR': '1', 'NO_COLOR': '1'}),
+        isFalse,
+        reason: 'off wins over on: an escape in a file cannot be taken back',
+      );
+    });
+
+    test('TERM=dumb says no', () {
+      expect(ansi(hasTerminal: true, terminalSupportsAnsi: true, environment: const {'TERM': 'dumb'}), isFalse);
+    });
+
+    test('a terminal answers for itself', () {
+      expect(ansi(hasTerminal: true, terminalSupportsAnsi: false), isFalse);
+      expect(ansi(hasTerminal: true, terminalSupportsAnsi: true), isTrue);
+    });
+
+    test('without a terminal, only a phone gets colours', () {
+      // A phone's output is read through `flutter run` or the device log, both
+      // of which render escapes; everywhere else it is a file, a pipe or a CI
+      // log.
+      expect(ansi(isMobile: true), isTrue);
+      expect(ansi(), isFalse, reason: 'a redirect must not collect escape codes');
+    });
+
+    test('the real probe answers with the same policy', () {
+      // Under `dart test` there is no terminal and this is not a phone.
+      expect(vm_delegate.supportsAnsi(), isFalse);
+    });
+  });
+
   group('the print destination', () {
     test('under `dart test` the platform delegate is the print one', () {
-      // Imported directly rather than through the conditional import, which is
-      // the only way a suite can name the file it means.
-      expect(vm_delegate.createConsoleDelegate(), isA<print_delegate.PrintConsoleDelegate>());
+      expect(vm_delegate.createConsoleDelegate(), isA<PrintConsoleDelegate>());
     });
 
     test('a line longer than the wrap width is split into pieces', () {
-      final long = 'x' * (print_delegate.kPrintWrapWidth * 2 + 5);
-      final pieces = print_delegate.wrapForPrint(long);
+      final long = 'x' * (kPrintWrapWidth * 2 + 5);
+      final pieces = wrapForPrint(long);
 
-      expect(pieces, hasLength(3), reason: 'Android drops what it cannot take in one call');
-      expect(pieces.first.length, equals(print_delegate.kPrintWrapWidth));
+      expect(pieces, hasLength(3), reason: 'Android truncates what it cannot take in one call');
+      expect(pieces.first.length, equals(kPrintWrapWidth));
       expect(pieces.last.length, equals(5));
       expect(pieces.join(), equals(long));
     });
 
+    test('a surrogate pair is never cut in half', () {
+      // Split through the middle, each half is a lone surrogate and the
+      // console's UTF-8 encoder renders it as U+FFFD.
+      final line = '${'x' * (kPrintWrapWidth - 1)}🚀tail';
+      final pieces = wrapForPrint(line);
+
+      expect(pieces.first.length, equals(kPrintWrapWidth - 1), reason: 'the cut moved back a unit');
+      expect(pieces.join(), equals(line));
+      expect(pieces.last, startsWith('🚀'));
+      for (final piece in pieces) {
+        expect(piece.runes.contains(0xFFFD), isFalse);
+      }
+    });
+
     test('a stack trace is split one frame-line at a time', () {
       expect(
-        print_delegate.wrapForPrint('Net | call | failed\n#0 one\n#1 two'),
+        wrapForPrint('Net | call | failed\n#0 one\n#1 two'),
         equals(<String>['Net | call | failed', '#0 one', '#1 two']),
       );
     });
 
     test('a short line is left whole', () {
-      expect(print_delegate.wrapForPrint('Rpc | call | ok'), equals(<String>['Rpc | call | ok']));
-    });
-
-    test('print renders ANSI; the VM answer depends on the terminal', () {
-      expect(print_delegate.supportsAnsi(), isTrue);
-      expect(vm_delegate.supportsAnsi(), isA<bool>());
+      expect(wrapForPrint('Rpc | call | ok'), equals(<String>['Rpc | call | ok']));
     });
   });
 
@@ -166,40 +443,52 @@ void main() {
       expect(lines.single, startsWith(kEsc), reason: 'a test delegate decides for itself');
     });
 
-    test('DevTools never gets escapes, whatever printColors says', () {
-      final seen = <bool>[];
-      Telemetry(runId: 'run-c2')
+    test('DevTools and the bin never get escapes, whatever printColors says', () {
+      for (final output in <LogOutput>[.developer, .ignore]) {
+        final seen = <bool>[];
+        Telemetry(runId: 'run-c2')
+          ..addSink(
+            ConsoleSink(
+              // No delegate: the sink resolves colours against the destination.
+              options: TelemetryOptions(showTime: false, output: output),
+              format: (event, options) {
+                seen.add(options.printColors);
+                return '';
+              },
+            ),
+          )
+          ..i('Rpc | call | ok');
+
+        expect(seen.single, isFalse, reason: '${output.name} stores the escapes rather than rendering them');
+      }
+    });
+
+    test('the resolution is cached, so a quiet destination costs one copy, not one per line', () {
+      final seen = <TelemetryOptions>[];
+      final pipeline = Telemetry(runId: 'run-c4')
         ..addSink(
           ConsoleSink(
-            // No delegate: the sink resolves colours against the destination,
-            // and `dart:developer` stores the escapes in the message.
             options: const TelemetryOptions(showTime: false, output: .developer),
             format: (event, options) {
-              seen.add(options.printColors);
+              seen.add(options);
               return '';
             },
           ),
         )
-        ..i('Rpc | call | ok');
+        ..i('Rpc | call | one')
+        ..i('Rpc | call | two');
 
-      expect(seen.single, isFalse);
+      expect(pipeline.buffer.length, equals(2));
+      expect(identical(seen.first, seen.last), isTrue);
     });
+  });
 
-    test('the ignore destination is silent and colourless', () {
-      final seen = <bool>[];
-      Telemetry(runId: 'run-c3')
-        ..addSink(
-          ConsoleSink(
-            options: const TelemetryOptions(showTime: false, output: .ignore),
-            format: (event, options) {
-              seen.add(options.printColors);
-              return 'dropped';
-            },
-          ),
-        )
-        ..i('Rpc | call | ok');
-
-      expect(seen.single, isFalse);
+  group('the DevTools destination', () {
+    test('carries the name it was built with', () {
+      // The name is part of the key the sink caches delegates under, so a zone
+      // that renames the logger builds its own.
+      expect(const DeveloperConsoleDelegate(name: 'auth').name, equals('auth'));
+      expect(const DeveloperConsoleDelegate().name, equals('app'));
     });
   });
 }

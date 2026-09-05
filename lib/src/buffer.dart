@@ -4,46 +4,57 @@ import 'package:telemetry/src/event.dart';
 import 'package:telemetry/src/level.dart';
 
 /// {@template log_buffer}
-/// The last N events of this launch, in memory.
+/// The last events of this launch, in memory.
 /// {@endtemplate}
 ///
-/// The buffer has two lives, and [markDrained] is the switch between them.
-/// Before a journal exists it is the only store, so it keeps everything from
-/// [minLevel] up, which covers the boot; a journal sink drains those events when
-/// it is built and calls [markDrained].
+/// Two rings, because the two kinds of line have opposite lifetimes.
 ///
-/// After the drain it keeps only [LogLevel.trace], which has no other home: a
-/// journal floor is typically `debug` and the console floor `info` in release.
-/// Keeping `debug` too would evict the trace ring within a minute of normal
-/// traffic.
+/// The first keeps everything from [minLevel] up, [limit] deep. Before a journal
+/// exists it is the only store, which covers the boot. A journal sink drains it
+/// and calls [markDrained], after which it keeps nothing.
+///
+/// The second keeps `trace`, [traceLimit] deep, for the whole launch. Trace has
+/// no other home, a journal floor being `debug` and a release console floor
+/// `info`, and it is also the loudest thing in the process. In one shared ring a
+/// second of tracing evicted the boot before the journal could adopt it.
 final class LogBuffer {
   /// {@macro log_buffer}
-  LogBuffer({this.limit = 300, this.minLevel = LogLevel.debug, this.maxVerbosity = 6})
-    : assert(limit > 0, 'limit must be positive');
+  LogBuffer({this.limit = 300, this.minLevel = LogLevel.debug, this.traceLimit = 100, this.maxVerbosity = 6})
+    : assert(limit > 0, 'limit must be positive'),
+      assert(traceLimit >= 0, 'traceLimit cannot be negative');
 
-  /// How many events are kept.
+  final Queue<LogEvent> _traces = Queue<LogEvent>();
+
+  /// How many events from [minLevel] up are kept before the drain.
   final int limit;
 
-  /// The lowest level the buffer keeps before the drain; `debug` by default, to
-  /// match a journal's usual floor.
+  /// The lowest level the first ring keeps; `debug` by default, to match a
+  /// journal's usual floor.
   final LogLevel minLevel;
 
-  /// Highest `trace` tier the buffer keeps (1 = loud, 6 = a whisper).
+  /// How many `trace` lines are kept, for the whole launch. Zero refuses trace
+  /// altogether, so `Telemetry.isEnabled` answers `false` when no sink wants it
+  /// either and the event is never built.
+  final int traceLimit;
+
+  /// Highest `trace` tier kept (1 = loud, 6 = a whisper).
   ///
-  /// The buffer is the only home `trace` has, so without this dial the quietest
-  /// tiers are built and stored on every call — and, being the loudest by
-  /// volume, they evict the tier someone is actually reading. Lower it and
-  /// `Telemetry.isEnabled` starts answering `false` for those tiers, so the
-  /// event is never built at all.
+  /// The noise dial. Below it an event is not built at all, rather than built
+  /// and dropped.
   final int maxVerbosity;
 
-  /// How many events are buffered.
-  int get length => _events.length;
-
-  /// The buffered events, oldest first.
-  Iterable<LogEvent> get events => _events;
+  /// How many events are buffered, in both rings.
+  int get length => _events.length + _traces.length;
 
   final Queue<LogEvent> _events = Queue<LogEvent>();
+
+  /// The buffered events, oldest first, the two rings merged by
+  /// [LogEvent.sequence] so a reader sees the order they happened in.
+  Iterable<LogEvent> get events {
+    if (_traces.isEmpty) return _events;
+    if (_events.isEmpty) return _traces;
+    return _merged();
+  }
 
   bool _drained = false;
 
@@ -53,36 +64,72 @@ final class LogBuffer {
   /// Whether the buffer keeps events of [level] at [verbosity] on its own
   /// account.
   ///
-  /// `trace` up to [maxVerbosity] always, since nothing else stores it and
-  /// `Telemetry.isEnabled` must say so even when no sink wants it; plus
-  /// everything from [minLevel] up, until [markDrained].
+  /// `trace` up to [maxVerbosity] while [traceLimit] leaves room for it, since
+  /// nothing else stores it, plus everything from [minLevel] up until
+  /// [markDrained].
   bool guarantees(LogLevel level, [int verbosity = 0]) {
-    if (level == .trace) return verbosity <= maxVerbosity;
+    if (level == .trace) return traceLimit > 0 && verbosity <= maxVerbosity;
     return !_drained && level >= minLevel;
   }
 
-  /// The journal has adopted what was buffered; keep only what it cannot hold.
+  /// The journal has adopted what was buffered; the first ring stands down.
   ///
   /// Called by the code that builds the journal sink, right after draining it.
-  /// Drops the boot's `debug` and `info` lines and leaves the `trace` ring.
+  /// The trace ring is untouched, since the journal does not store it.
   void markDrained() {
     _drained = true;
-    _events.removeWhere((event) => event.level != .trace);
+    _events.clear();
   }
 
   /// The journal is gone; the buffer keeps the boot again.
   ///
-  /// The mirror of [markDrained], called when the journal sink is torn down: a
-  /// retried boot needs a keeper for its own lines until a journal opens again.
+  /// The mirror of [markDrained], called when the journal sink is torn down. A
+  /// retried boot needs a keeper until a journal opens again.
   void undrain() => _drained = false;
 
-  /// Adds [event] when the buffer is still the one keeping it.
+  /// Adds [event] to the ring that keeps it, if either does.
   void add(LogEvent event) {
     if (!guarantees(event.level, event.verbosity)) return;
+    if (event.level == .trace) {
+      if (_traces.length >= traceLimit) _traces.removeFirst();
+      _traces.add(event);
+      return;
+    }
     if (_events.length >= limit) _events.removeFirst();
     _events.add(event);
   }
 
-  /// Empties the buffer.
-  void clear() => _events.clear();
+  /// Empties both rings.
+  void clear() {
+    _events.clear();
+    _traces.clear();
+  }
+
+  /// The two rings interleaved. Each is already in sequence order, so this is a
+  /// merge rather than a sort.
+  List<LogEvent> _merged() {
+    final merged = <LogEvent>[];
+    final left = _events.iterator..moveNext();
+    final right = _traces.iterator..moveNext();
+    var hasLeft = true;
+    var hasRight = true;
+    while (hasLeft && hasRight) {
+      if (left.current.sequence <= right.current.sequence) {
+        merged.add(left.current);
+        hasLeft = left.moveNext();
+      } else {
+        merged.add(right.current);
+        hasRight = right.moveNext();
+      }
+    }
+    while (hasLeft) {
+      merged.add(left.current);
+      hasLeft = left.moveNext();
+    }
+    while (hasRight) {
+      merged.add(right.current);
+      hasRight = right.moveNext();
+    }
+    return merged;
+  }
 }

@@ -1,6 +1,8 @@
 import 'package:telemetry/src/console/ansi.dart';
 import 'package:telemetry/src/console/delegate.dart';
-import 'package:telemetry/src/console/delegate_developer.dart' as developer_delegate;
+import 'package:telemetry/src/console/delegate_developer.dart'
+    if (dart.library.js_interop) 'package:telemetry/src/console/delegate_developer_js.dart'
+    as developer_delegate;
 import 'package:telemetry/src/console/delegate_fallback.dart'
     if (dart.library.io) 'package:telemetry/src/console/delegate_vm.dart'
     if (dart.library.js_interop) 'package:telemetry/src/console/delegate_js.dart'
@@ -26,10 +28,21 @@ typedef ConsoleFormat = String Function(LogEvent event, TelemetryOptions options
 /// Renders events for a human and hands them to the environment's console.
 ///
 /// One line: `HH:MM:SS [I] Area | operation | message key=value key=value`,
-/// with the error appended after ` | ` and the stack trace on the lines below it
-/// for failures only. One line keeps the output greppable, since a multi-line
-/// frame hides the context a filter would otherwise show; a value containing a
-/// space, an `=` or a quote is quoted, so the `key=value` pairs stay parseable.
+/// with the error after ` | ` and the stack trace below it for failures only.
+/// One line stays greppable, where a multi-line frame hides the context a
+/// filter would show.
+///
+/// [TelemetryOptions.levelTag] is the text that says the level, `[I]`, `I`,
+/// `INFO` or a glyph, in the level's colour where the destination renders
+/// colour, with the time and the keys dimmed. [TelemetryOptions.icon] adds a
+/// subsystem glyph after the tag and drops the word for the area. Neither
+/// touches the body a crash reporter groups on.
+///
+/// The attributes rendered are [LogEvent.meta] and `event.name`. The launch's
+/// [LogEvent.resource] is left out, since a line should carry what varied. A
+/// value containing a space, a quote, an `=` or a control character is quoted
+/// and escaped, so the pairs stay machine-readable and a value cannot drive the
+/// terminal it is printed to.
 /// {@endtemplate}
 final class ConsoleSink implements TelemetrySink {
   /// {@macro console_sink}
@@ -40,23 +53,27 @@ final class ConsoleSink implements TelemetrySink {
   final ConsoleFormat _format;
 
   /// One delegate per destination, built on first use: `createConsoleDelegate`
-  /// probes the environment (`stdout.hasTerminal`) and allocates, which is too
-  /// much work to repeat per line.
-  final Map<LogOutput, ConsoleDelegate> _delegates = <LogOutput, ConsoleDelegate>{};
+  /// probes `stdout.hasTerminal` and allocates, which is too much per line.
+  /// Keyed by the name too, so a zone that renames the DevTools logger gets its
+  /// own delegate.
+  final Map<(LogOutput, String), ConsoleDelegate> _delegates = <(LogOutput, String), ConsoleDelegate>{};
 
   /// Whether each destination renders ANSI. Probed once, for the same reason.
   final Map<LogOutput, bool> _ansi = <LogOutput, bool>{};
 
+  /// The last colour resolution, cached by the identity of its input: many lines
+  /// share one set of options, and turning colours off allocates a copy.
+  ({TelemetryOptions from, TelemetryOptions to})? _colors;
+
   /// Fixed output destination; when null the delegate follows
-  /// [TelemetryOptions.output] and the environment. Tests pass their own, and a
-  /// delegate given here is trusted to render whatever [TelemetryOptions] asks
-  /// for.
+  /// [TelemetryOptions.output] and the environment. A delegate given here is
+  /// trusted to render whatever [TelemetryOptions] asks for.
   final ConsoleDelegate? delegate;
 
   /// The options used when no zone supplies any.
   ///
-  /// Settable: a dev menu that turns tracing on, or a test that quietens one
-  /// suite, has nowhere else to say so. Zone options still win where they exist.
+  /// Settable for a dev menu that turns tracing on, or a test that quietens one
+  /// suite. Zone options still win where they exist.
   TelemetryOptions options;
 
   TelemetryOptions get _options => currentTelemetryOptions() ?? options;
@@ -74,33 +91,46 @@ final class ConsoleSink implements TelemetrySink {
   /// reimplement it.
   static String render(LogEvent event, TelemetryOptions options) {
     final buffer = StringBuffer();
+    final colors = options.printColors;
     if (options.showTime) {
+      final clock = _time(event.timestamp, millis: options.showMillis);
       buffer
-        ..write(_time(event.timestamp, millis: options.showMillis))
+        ..write(colors ? dim(clock) : clock)
         ..write(' ');
     }
-    final prefix = '[${event.level.prefix}]';
+    // The tag says the level and carries the only colour on the line. The
+    // subsystem glyph follows it: neither can stand in for the other.
+    final tag = options.levelTag.of(event.level);
     buffer
-      ..write(options.printColors ? colorize(event.level, prefix) : prefix)
-      ..write(' ')
-      ..write(event.body);
-
-    // Attributes stay on the same line, `key=value`, so one grep finds the line
-    // and its values.
-    for (final MapEntry(:key, :value) in event.meta.entries) {
+      ..write(colors ? colorize(event.level, tag) : tag)
+      ..write(' ');
+    final glyph = options.icon?.of(event);
+    if (glyph != null) {
       buffer
-        ..write(' ')
-        ..write(key)
-        ..write('=');
+        ..write(glyph.glyph)
+        ..write(' ');
+    }
+    // A bridged line or a captured `print` can carry a newline, and one event
+    // has to stay one line. The area word is dropped when a glyph says it.
+    _writeBare(buffer, glyph != null && !glyph.keepsArea ? _withoutArea(event.body) : event.body);
+
+    // Attributes stay on the line as `key=value`, so one grep finds the line and
+    // its values. `event.name` leads, being the identity the rest describes.
+    if (event.name case final String name) {
+      _writeKey(buffer, 'event.name', colors: colors);
+      _writeValue(buffer, name);
+    }
+    for (final MapEntry(:key, :value) in event.meta.entries) {
+      _writeKey(buffer, key, colors: colors);
       _writeValue(buffer, value);
     }
 
     if (event.error case final Object error) {
-      buffer
-        ..write(' | ')
-        ..write(error);
+      buffer.write(' | ');
+      _writeBare(buffer, error.toString());
     }
-    // Only failures get the trace: on anything lighter it buries the next line.
+    // Only failures get the trace, and it is the one part allowed to be
+    // multi-line: folded into one line it is unreadable.
     if (event.level >= .error) {
       if (event.stackTrace case final StackTrace trace) {
         buffer
@@ -111,39 +141,50 @@ final class ConsoleSink implements TelemetrySink {
     return buffer.toString();
   }
 
-  /// [options] with `printColors` turned off where the destination cannot render
-  /// ANSI: a browser console shows the escapes as garbage, DevTools stores them
-  /// in the message, and a CI log keeps them forever.
+  /// [options] with `printColors` off where the destination cannot render ANSI:
+  /// a browser console shows the escapes, DevTools stores them in the message,
+  /// and a file or a CI log keeps them forever.
   TelemetryOptions _resolveColors(TelemetryOptions options) {
-    if (!options.printColors) return options;
-    if (delegate != null) return options;
-    final ansi = _ansi.putIfAbsent(
-      options.output,
-      () => switch (options.output) {
-        .platform => platform_delegate.supportsAnsi(),
-        .print => print_delegate.supportsAnsi(),
-        .developer || .ignore => false,
-      },
-    );
-    return ansi ? options : options.copyWith(printColors: false);
+    if (!options.printColors || delegate != null) return options;
+    final cached = _colors;
+    if (cached != null && identical(cached.from, options)) return cached.to;
+    final ansi = _ansi.putIfAbsent(options.output, () => _rendersAnsi(options.output));
+    final resolved = ansi ? options : options.copyWith(printColors: false);
+    _colors = (from: options, to: resolved);
+    return resolved;
   }
+
+  /// Whether [output] renders ANSI. `print` writes to the same process console
+  /// as `platform`, so the platform delegate answers for both.
+  static bool _rendersAnsi(LogOutput output) => switch (output) {
+    .platform || .print => platform_delegate.supportsAnsi(),
+    .developer || .ignore => false,
+  };
 
   ConsoleDelegate _delegateFor(TelemetryOptions options) =>
       delegate ??
       _delegates.putIfAbsent(
-        options.output,
+        (options.output, options.developerName),
         () => switch (options.output) {
           .platform => platform_delegate.createConsoleDelegate(),
           .print => print_delegate.createConsoleDelegate(),
-          // The name is read once, from the options in force when DevTools
-          // output is first used.
           .developer => developer_delegate.createConsoleDelegate(name: options.developerName),
           .ignore => ignore_delegate.createConsoleDelegate(),
         },
       );
 
-  /// Local time: a console line is read against the developer's own wall clock.
-  /// Everything that leaves the device carries [LogEvent.timestamp], in UTC.
+  /// [body] from after its first `|`, trimmed: `Control | lifecycle | disposed`
+  /// becomes `lifecycle | disposed`. A body with no `|`, such as a bridged line,
+  /// is returned whole.
+  static String _withoutArea(String body) {
+    final bar = body.indexOf('|');
+    if (bar < 0) return body;
+    // ignore: avoid-substring
+    return body.substring(bar + 1).trimLeft();
+  }
+
+  /// Local time, since a console line is read against the developer's own
+  /// clock. What leaves the device carries [LogEvent.timestamp], in UTC.
   static String _time(DateTime utc, {required bool millis}) {
     final local = utc.toLocal();
     String pad(int value) => value.toString().padLeft(2, '0');
@@ -151,8 +192,20 @@ final class ConsoleSink implements TelemetrySink {
     return millis ? '$clock.${local.millisecond.toString().padLeft(3, '0')}' : clock;
   }
 
-  /// Writes [value] as a logfmt field: bare when it is one word, quoted when a
-  /// space, an `=` or a quote would otherwise break the pair apart.
+  /// Writes ` key=`, dimmed when [colors] is on: keys repeat from line to line,
+  /// values do not.
+  static void _writeKey(StringBuffer buffer, String key, {required bool colors}) {
+    buffer.write(' ');
+    if (colors) buffer.write(kDim);
+    buffer
+      ..write(key)
+      ..write('=');
+    if (colors) buffer.write(kReset);
+  }
+
+  /// Writes [value] as a logfmt field: bare when it is one plain word, quoted
+  /// when a space, a quote, an `=` or a control character would otherwise break
+  /// the pair apart.
   static void _writeValue(StringBuffer buffer, Object? value) {
     if (value == null) {
       buffer.write('null');
@@ -164,25 +217,53 @@ final class ConsoleSink implements TelemetrySink {
       return;
     }
     buffer.write('"');
-    for (var index = 0; index < text.length; index++) {
-      final unit = text.codeUnitAt(index);
-      // A quote or a backslash is escaped; a newline would end the line early.
-      if (unit == 0x22 || unit == 0x5C) buffer.writeCharCode(0x5C);
-      if (unit == 0x0A) {
-        buffer.write(r'\n');
-        continue;
-      }
-      buffer.writeCharCode(unit);
-    }
+    _escapeInto(buffer, text, quoted: true);
     buffer.write('"');
   }
+
+  /// Writes free text, the body or an error message, escaping only what would
+  /// break the line. Quotes and spaces are prose here and stay as they are.
+  static void _writeBare(StringBuffer buffer, String text) => _escapeInto(buffer, text, quoted: false);
+
+  /// Copies [text] into [buffer], escaping what has to be escaped and writing
+  /// everything else in runs. Most values need nothing and cost one `write`.
+  static void _escapeInto(StringBuffer buffer, String text, {required bool quoted}) {
+    var start = 0;
+    for (var index = 0; index < text.length; index++) {
+      final escape = _escapeFor(text.codeUnitAt(index), quoted: quoted);
+      if (escape == null) continue;
+      // ignore: avoid-substring
+      if (index > start) buffer.write(text.substring(start, index));
+      buffer.write(escape);
+      start = index + 1;
+    }
+    if (start == 0) {
+      buffer.write(text);
+      return;
+    }
+    // ignore: avoid-substring
+    if (start < text.length) buffer.write(text.substring(start));
+  }
+
+  /// The escape for [unit], or null when it may be written as it is.
+  static String? _escapeFor(int unit, {required bool quoted}) => switch (unit) {
+    0x22 when quoted => r'\"',
+    0x5C when quoted => r'\\',
+    0x0A => r'\n',
+    0x0D => r'\r',
+    0x09 => r'\t',
+    // Every other C0 control and DEL. An ESC in a value would otherwise drive
+    // the terminal, from data the app did not write.
+    _ when unit < 0x20 || unit == 0x7F => '\\u${unit.toRadixString(16).padLeft(4, '0')}',
+    _ => null,
+  };
 
   static bool _needsQuotes(String text) {
     if (text.isEmpty) return true;
     for (var index = 0; index < text.length; index++) {
       final unit = text.codeUnitAt(index);
-      // space, ", =, newline, tab
-      if (unit == 0x20 || unit == 0x22 || unit == 0x3D || unit == 0x0A || unit == 0x09) return true;
+      // space, ", =, and any control character
+      if (unit == 0x20 || unit == 0x22 || unit == 0x3D || unit < 0x20 || unit == 0x7F) return true;
     }
     return false;
   }

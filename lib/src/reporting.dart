@@ -7,22 +7,23 @@ import 'package:telemetry/src/throttle.dart';
 /// {@template reporting_sink}
 /// The crash-reporting end of a pipeline, minus the vendor.
 ///
-/// Three destinations, three independent thresholds, the shape Sentry's own
-/// `LoggingIntegration` uses (`minBreadcrumbLevel`, `minEventLevel`,
+/// Three destinations and three independent thresholds, the shape of Sentry's
+/// `LoggingIntegration` (`minBreadcrumbLevel`, `minEventLevel`,
 /// `minSentryLogLevel`):
 ///
-/// * everything from [breadcrumbLevel] up becomes a [breadcrumb], so a report
+/// * from [breadcrumbLevel] up an event becomes a [breadcrumb], so a report
 ///   arrives with the trail that led to it;
-/// * everything from [captureLevel] up is [capture]d as an incident, through
-///   [throttle] — a dedupe per failure identity and a per-minute ceiling, which
-///   is what keeps a ten-minute outage from filing one issue per retry;
-/// * an explicit `..escalate()` on a lighter event is [report]ed as a
-///   structured log: visible in the reporter without becoming an incident.
+/// * from [captureLevel] up it is [capture]d as an incident, through
+///   [throttle], which dedupes per failure identity and caps sends per minute;
+/// * an explicit `..escalate()` below [captureLevel] is [report]ed as a
+///   structured log, visible without becoming an incident.
 ///
-/// The policy lives here because it is the same policy in every app; the three
-/// hooks are the only part that knows a vendor. What may leave the device is not
-/// this class's business: a subclass decides which attributes travel, and
-/// redacts what it must.
+/// The two floors are independent, and the call site knows neither: it says
+/// `..escalate()` and this class answers.
+///
+/// The policy lives here because it is the same in every app, and the three
+/// hooks are the only part that knows a vendor. A subclass decides which
+/// attributes may leave the device, and redacts what it must.
 /// {@endtemplate}
 abstract base class ReportingSink implements TelemetrySink, EscalationSink {
   /// {@macro reporting_sink}
@@ -39,24 +40,34 @@ abstract base class ReportingSink implements TelemetrySink, EscalationSink {
   /// Events at or above this level become incidents.
   final LogLevel captureLevel;
 
+  /// Whether either floor wants this event.
+  ///
+  /// Both floors, since the pipeline skips `handle` for a level no sink claims.
+  /// Gating on the trail's floor alone would let [captureLevel] only narrow what
+  /// the trail admitted, so a quiet trail with loud capture would capture
+  /// nothing.
   @override
-  bool enabled(LogLevel level, int verbosity) => level >= breadcrumbLevel;
+  bool enabled(LogLevel level, int verbosity) => level >= breadcrumbLevel || level >= captureLevel;
 
   @override
   void handle(LogEvent event) {
-    // The trail first: an incident captured below then carries its own last line.
-    breadcrumb(event);
+    // The trail first, so an incident captured below carries its own last line.
+    if (event.level >= breadcrumbLevel) breadcrumb(event);
     if (event.level < captureLevel) return;
     if (!throttle.allow(event)) return;
     capture(event, event.level, event.stackTrace);
   }
 
+  /// Decides what an explicit `..escalate()` becomes.
+  ///
+  /// At or above [captureLevel] an escalation is an incident, below it a
+  /// structured log. Escalating an event the automatic path already captured
+  /// costs nothing: [throttle] refuses the second capture at the dedupe check,
+  /// without spending a slot in the per-minute ceiling. So [level] and
+  /// [stackTrace] cannot change a capture that already happened.
   @override
   void escalate(LogEvent event, {LogLevel? level, StackTrace? stackTrace}) {
     final effective = level ?? event.level;
-    // An override that says "this warning IS an incident" is the one case where
-    // an escalation captures: the draft only forwards it because the line was
-    // logged at a level the automatic path ignores.
     if (effective >= captureLevel) {
       if (!throttle.allow(event)) return;
       capture(event, effective, stackTrace ?? event.stackTrace);
@@ -73,8 +84,9 @@ abstract base class ReportingSink implements TelemetrySink, EscalationSink {
   @protected
   void capture(LogEvent event, LogLevel level, StackTrace? stackTrace);
 
-  /// Sends [event] as a structured log at [level], which is below
-  /// [captureLevel].
+  /// Sends [event] as a structured log at [level], always below [captureLevel].
+  /// An implementation must handle every level below that floor, including
+  /// `error` when the floor is higher than the default.
   @protected
   void report(LogEvent event, LogLevel level);
 }

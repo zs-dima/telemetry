@@ -10,3 +10,6 @@ AGENTS.md
 Makefile
 dart_test.yaml
 .metadata
+# The benchmark and the deliberately broken analyzer fixture: not part of what a consumer needs.
+tool/
+test/analyzer/

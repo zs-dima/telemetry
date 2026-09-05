@@ -17,9 +17,8 @@ TelemetryOptions? currentTelemetryOptions() => switch (Zone.current[kTelemetryOp
 /// The attributes every event logged in the current zone carries; empty outside
 /// any scope.
 ///
-/// The Dart form of `slog.With`, `ILogger.BeginScope`, Serilog's `LogContext`
-/// and pino's `child`: context set once by the code that knows it, rather than
-/// repeated at every call site under it.
+/// The Dart form of `slog.With`, `ILogger.BeginScope` and Serilog's
+/// `LogContext`: context set once by the code that knows it.
 Map<String, Object?> currentTelemetryContext() => switch (Zone.current[kTelemetryContextKey]) {
   final Map<String, Object?> attributes => attributes,
   _ => const <String, Object?>{},
@@ -27,9 +26,9 @@ Map<String, Object?> currentTelemetryContext() => switch (Zone.current[kTelemetr
 
 /// Runs [body] with [attributes] added to the ambient scope.
 ///
-/// Merged once, here, rather than walked at every emit: a nested scope costs one
-/// map and an event costs one zone lookup. A key set by an inner scope wins over
-/// the same key outside it, and a call site's own `.meta` wins over both.
+/// Merged here rather than walked at every emit: a nested scope costs one map,
+/// an event one zone lookup. An inner scope wins over an outer one, and a call
+/// site's own `.meta` over both.
 R runTelemetryScope<R>(Map<String, Object?> attributes, R Function() body) {
   if (attributes.isEmpty) return body();
   final merged = <String, Object?>{...currentTelemetryContext(), ...attributes};
@@ -44,14 +43,16 @@ R runTelemetryScope<R>(Map<String, Object?> attributes, R Function() body) {
 ///
 /// Two mechanics, both carried over from `package:l` (WTFPL, Plague Fox):
 ///
-/// * the print handler re-enters the same zone (`self.run`) before emitting, so
-///   the event is produced under the options it belongs to;
+/// * the print handler re-enters the zone `print` was called in (`zone.run`)
+///   before emitting, so the event carries the options and the ambient scope it
+///   belongs to. `self.run`, which `package:l` uses, drops back to the zone that
+///   installed this specification and loses any [runTelemetryScope] below it.
 /// * when [TelemetryOptions.handlePrint] is off, or no [onPrint] was given, it
-///   forwards to `parent.print` rather than `self.print`, which would recurse
-///   forever (l issue #20).
+///   forwards to `parent.print`. `self.print` would recurse forever (l issue
+///   #20).
 ///
 /// The console sink writes through `Zone.root.print`, outside this
-/// specification, so rendering an event can never be captured as a new one.
+/// specification, so rendering an event cannot be captured as a new one.
 R runTelemetry<R>(
   R Function() body, {
   TelemetryOptions options = .defaults,
@@ -63,7 +64,7 @@ R runTelemetry<R>(
     print: (self, parent, zone, line) {
       final capture = onPrint;
       if (capture != null && (currentTelemetryOptions()?.handlePrint ?? options.handlePrint)) {
-        self.run<void>(() => capture(line));
+        zone.run<void>(() => capture(line));
       } else {
         parent.print(zone, line);
       }

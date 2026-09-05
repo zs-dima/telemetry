@@ -43,6 +43,11 @@ compile-check: ## compile the example for every target the package claims
 	@dart compile js -o build/example.js example/example.dart >/dev/null
 	@dart compile wasm -o build/example.wasm example/example.dart >/dev/null
 
+.PHONY: bench
+bench: ## compiled micro-benchmark of the hot paths (not a gate)
+	@dart compile exe -o build/bench tool/bench.dart >/dev/null
+	@build/bench
+
 .PHONY: publish-check
 publish-check: ## pub.dev dry run
 	@dart pub publish --dry-run

@@ -4,8 +4,7 @@ import 'package:telemetry/telemetry.dart';
 
 /// Run it: `dart run example/example.dart`
 ///
-/// It also has to survive every compiler the package claims to support, which is
-/// what `make compile-check` does:
+/// `make compile-check` also builds it with every compiler the package supports:
 ///
 /// ```sh
 /// dart compile js   -o build/example.js   example/example.dart
@@ -13,15 +12,27 @@ import 'package:telemetry/telemetry.dart';
 /// ```
 void main() {
   final log = Telemetry(runId: 'example')
-    ..addSink(ConsoleSink())
+    // The bare letter for the level, in colour where a terminal renders it, and
+    // one glyph per subsystem after it, with the area word dropped. None of this
+    // reaches a journal or a crash reporter.
+    ..addSink(
+      ConsoleSink(
+        options: const TelemetryOptions(
+          levelTag: .letter,
+          icon: AreaIcons(<String, String>{'App': '🚀', 'Sync': '🔄'}),
+        ),
+      ),
+    )
     ..toastSink = const _PrintToasts()
-    // What identifies this launch, on every event from here on.
+    // What identifies this launch. It travels on every event as
+    // `LogEvent.resource` and reaches a sink through `event.attributes`, but a
+    // console line shows only what varied.
     ..resource = <String, Object?>{'app.version': '1.0.0', 'app.environment': 'example'}
     // One line.
     ..i('App | start | ready');
 
-  // Context first, then independent channel actions. The body is the grouping key; everything
-  // variable goes into attributes, and `name` is the identity that outlives a copy edit.
+  // Context first, then independent channel actions. The body is the grouping key, everything
+  // variable is an attribute, and `name` is the identity that survives a copy edit.
   log('Sync | upload | refused')
       .name('sync.upload.refused')
       .meta(<String, Object?>{'http.status_code': 429, 'sync.attempt': 3})
@@ -36,6 +47,10 @@ void main() {
       ..d('Sync | upload | retrying')
       ..i('Sync | upload | done');
   });
+
+  // A sink stores the flat projection: the launch, the scope and the call site,
+  // plus the identity and the exception.
+  print('stored: ${log.buffer.events.last.attributes}');
 }
 
 final class _PrintToasts implements ToastSink {

@@ -6,7 +6,7 @@ typedef _Sent = ({String body, LogLevel level});
 
 /// The policy of [ReportingSink] with a notebook where the vendor would be.
 final class _Recorder extends ReportingSink {
-  _Recorder({super.breadcrumbLevel, super.captureLevel});
+  _Recorder({super.throttle, super.breadcrumbLevel, super.captureLevel});
 
   final List<String> breadcrumbs = <String>[];
   final List<_Sent> captures = <_Sent>[];
@@ -70,6 +70,18 @@ void main() {
       expect(reporter.breadcrumbs, hasLength(20), reason: 'the trail keeps every attempt; only the issue is deduped');
     });
 
+    test('the two floors are independent: a quiet trail can still capture', () async {
+      // `enabled` used to gate on the breadcrumb floor alone, so the pipeline
+      // skipped `handle` before the capture rule was consulted.
+      final quiet = _Recorder(breadcrumbLevel: .error, captureLevel: .warn);
+      Telemetry(runId: 'run-r4')
+        ..addSink(quiet)
+        ..w('Net | retry | slow', error: StateError('boom'));
+
+      expect(quiet.captures.single.level, equals(LogLevel.warn));
+      expect(quiet.breadcrumbs, isEmpty, reason: 'the trail starts above this line');
+    });
+
     test('an escalated warning is a structured log, not an incident', () async {
       telemetry('Net | retry | exhausted')
         ..warn()
@@ -98,6 +110,55 @@ void main() {
       await Future<void>.delayed(.zero);
 
       expect(reporter.captures, hasLength(1), reason: 'one failure cannot spend two reports');
+    });
+
+    test('an escalated error the sink already captured costs one incident, not two', () async {
+      // The draft forwards every escalation; the throttle makes the second
+      // send free, on the identity the automatic path used.
+      telemetry('Net | call | failed').cause(StateError('boom'))
+        ..error()
+        ..escalate();
+      await Future<void>.delayed(.zero);
+
+      expect(reporter.captures, hasLength(1));
+      expect(reporter.reports, isEmpty, reason: 'at or above captureLevel an escalation is an incident, not a log');
+    });
+
+    test('an escalation below captureLevel is a log, whatever the event level', () async {
+      // The case the draft used to swallow: a higher capture floor makes an
+      // `error` a log, and the call site still asked for it.
+      final strict = _Recorder(captureLevel: .fatal);
+      final pipeline = Telemetry(runId: 'run-r5')
+        ..addSink(strict)
+        ..escalationSink = strict;
+
+      pipeline('Net | call | failed').cause(StateError('boom'))
+        ..error()
+        ..escalate();
+      await Future<void>.delayed(.zero);
+
+      expect(strict.captures, isEmpty);
+      expect(strict.reports.single.level, equals(LogLevel.error));
+    });
+
+    test('an escalation of a captured failure spends no slot in the per-minute ceiling', () async {
+      // It returns at the dedupe check, before the ceiling is counted, so a
+      // cascade that escalates cannot starve the next distinct failure.
+      final counted = _Recorder(throttle: ReportThrottle(maxPerMinute: 2));
+      final pipeline = Telemetry(runId: 'run-r6')
+        ..addSink(counted)
+        ..escalationSink = counted;
+
+      pipeline('Net | call | failed').cause(StateError('boom'))
+        ..error()
+        ..escalate();
+      await Future<void>.delayed(.zero);
+      pipeline.e('Db | write | failed', error: StateError('disk'));
+
+      expect(
+        counted.captures.map((capture) => capture.body),
+        equals(<String>['Net | call | failed', 'Db | write | failed']),
+      );
     });
 
     test('captureLevel moves the line between a log and an incident', () {

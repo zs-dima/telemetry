@@ -1,23 +1,26 @@
-// A builder returns `this` so one draft can describe an event once and then
-// name several channels.
+// A builder returns `this`, so one draft can describe an event and then name
+// several channels.
 // ignore_for_file: avoid_returning_this
+// `lenient` and `gated` cannot be initializing formals: a named parameter may
+// not start with an underscore.
+// ignore_for_file: prefer_initializing_formals
 
 import 'dart:async';
 
 import 'package:meta/meta.dart';
+import 'package:telemetry/src/attributes.dart';
 import 'package:telemetry/src/event.dart';
 import 'package:telemetry/src/level.dart';
 import 'package:telemetry/src/sink.dart';
 import 'package:telemetry/src/telemetry.dart';
 import 'package:telemetry/src/zone.dart';
 
-/// An OpenTelemetry attribute key: lowercase, dot-namespaced, snake_case within
-/// a segment, at least two segments. Checked only in debug, and only while
-/// `Telemetry.strict` is on.
-final RegExp _kAttributeKey = RegExp(r'^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$');
+/// The `@useResult` message: a dropped draft is a dropped log line.
+const String _kChain =
+    'a builder returns the draft: chain it with `.`, and close it with an action '
+    '(`..warn()`, `..toast()`). A builder whose result is dropped logs nothing.';
 
-/// Everything known about one thing that happened, before any channel is named.
-/// A context carrier, not a deferred log statement:
+/// Everything known about one event, before any channel is named.
 ///
 /// ```dart
 /// log('Pairing | handshake | refused')
@@ -28,47 +31,40 @@ final RegExp _kAttributeKey = RegExp(r'^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$');
 ///   ..toast(tone: ToastTone.alert);
 /// ```
 ///
-/// The log action ([warn], [error], [at], …) builds the [LogEvent] and
-/// dispatches it to the sinks synchronously. A channel action ([toast],
-/// [escalate], [track], [notify]) validates its arguments at the call site and
-/// then records itself; on the next microtask every recorded channel receives
-/// that same event. Cascade order therefore cannot matter, and the event behind
-/// a toast's "Details" is the one the sinks were given.
+/// A log action ([warn], [error], [at]) builds the [LogEvent] and dispatches it
+/// to the sinks synchronously. A channel action ([toast], [escalate], [track],
+/// [notify]) validates its arguments and records itself; on the next microtask
+/// every recorded channel receives that same event. Cascade order cannot
+/// matter, and a toast's "Details" opens the record the sinks were given.
 ///
-/// A fluent chain can be dropped silently when its terminal call is forgotten,
-/// with no compile-time error. Two guards close that gap:
-///
-/// * a draft used only for a non-log channel is logged anyway when the microtask
-///   runs, at [LogLevel.info], or [LogLevel.warn] when it carries a cause, so a
-///   user-visible effect always leaves a record;
-/// * a draft that names no channel at all is logged, in debug builds, as
-///   `Telemetry | draft | unused` at [LogLevel.warn], carrying the body that was
-///   dropped.
+/// Every builder is `@useResult`, so a dropped chain is an `unused_result`
+/// diagnostic where it is written, and a build failure under
+/// `--fatal-warnings`. There is no runtime guard: it could not tell a draft
+/// held across an `await` from a forgotten one.
 final class LogDraft {
-  /// Created by [Telemetry.call]; not constructed directly.
+  /// Created by [Telemetry.call].
   ///
-  /// [guard] arms the debug-only unused-draft report, and is off for the one-call
-  /// conveniences, which act before they return. [lenient] exempts the body from
-  /// the `Telemetry.strict` convention check, for a line that was never going to
-  /// be `Area | operation | message` — a captured `print`, a bridged record.
-  // A named parameter cannot be an initializing formal for a private field.
-  // ignore: prefer_initializing_formals
-  LogDraft(this._telemetry, this._message, {bool guard = true, bool lenient = false}) : _lenient = lenient {
-    if (!guard) return;
-    // Armed from the constructor: it is the only code that runs for a draft
-    // nobody ever acts on, so arming from an action would miss the very case it
-    // exists to catch. The standard debug-only idiom; the body runs only in
-    // debug builds.
-    // ignore: avoid-immediately-invoked-functions
-    assert(() {
-      _telemetry.guardUnused(this);
-      return true;
-    }(), 'unreachable: the closure only arms the guard');
+  /// [lenient] exempts the body from the `Telemetry.strict` convention check,
+  /// for a captured `print` or a record bridged from another package. [gated]
+  /// says the caller already asked `Telemetry.isEnabled` for its level.
+  LogDraft(this._telemetry, this._message, {bool lenient = false, bool gated = false})
+    : _lenient = lenient,
+      _gated = gated {
+    // Checked here rather than at snapshot, so the assertion points at the line
+    // that wrote the body and fires whether or not the level is consumed.
+    assert(
+      _lenient || !_telemetry.strict || _message is! String || _isCanonicalBody(_message),
+      'a log body is `Area | operation | message`, the crash reporter\'s grouping key: '
+      'anything variable goes into .meta({...}). Pass lenient: true for a bridged line, '
+      'or set Telemetry.strict = false for a pipeline whose bodies all come from elsewhere. '
+      'Got: $_message',
+    );
   }
 
   final Telemetry _telemetry;
   final Object _message;
   final bool _lenient;
+  final bool _gated;
 
   Map<String, Object?>? _meta;
   Object? _error;
@@ -77,46 +73,41 @@ final class LogDraft {
   String? _name;
   int _verbosity = 0;
   DateTime? _timestamp;
+  ({String traceId, String? spanId})? _trace;
 
-  /// Channels waiting for the event, in the order they were named.
-  final List<void Function(LogEvent event)> _channels = <void Function(LogEvent event)>[];
+  /// Channels waiting for the event, in the order they were named. Built on the
+  /// first channel action; most drafts never name one.
+  List<void Function(LogEvent event)>? _channels;
 
   LogLevel? _loggedLevel;
   LogEvent? _event;
-  bool _acted = false;
   bool _scheduled = false;
 
-  /// Adds structured attributes, OpenTelemetry-named (lowercase,
-  /// dot-namespaced, snake_case): `app.pairing.attempt`, `rpc.path`. Values are
-  /// what a query filters on, and belong here rather than in the message.
+  /// Adds OpenTelemetry-named attributes: lowercase, dot-namespaced,
+  /// snake_case, as in `app.pairing.attempt`. A query filters on these, so
+  /// anything variable belongs here rather than in the body.
   ///
-  /// A value may be an `Object Function()`, evaluated once, at snapshot time and
-  /// only if the event is built — `slog`'s `LogValuer`, for an attribute that
-  /// costs something to compute.
-  LogDraft meta(Map<String, Object?> attributes) {
-    if (attributes.isEmpty) return this;
-    // ignore: avoid-immediately-invoked-functions, the debug-only convention check.
-    assert(() {
-      if (!_telemetry.strict) return true;
-      for (final key in attributes.keys) {
-        if (_kAttributeKey.hasMatch(key)) continue;
-        throw ArgumentError.value(
-          key,
-          'attributes',
-          'an attribute key is OpenTelemetry-named: lowercase, dot-namespaced, '
-              'snake_case within a segment, at least two segments (app.pairing.attempt). '
-              'Set Telemetry.strict = false for a pipeline that cannot follow that',
-        );
-      }
-      return true;
-    }(), 'unreachable: the closure only checks the keys');
+  /// A value may be an `Object Function()`, evaluated at snapshot time and only
+  /// if the event is built, like `slog`'s `LogValuer`. A null map is a no-op.
+  @UseResult(_kChain)
+  LogDraft meta(Map<String, Object?>? attributes) {
+    assert(_loggedLevel == null, 'A draft is described before it is logged; this one already logged.');
+    if (attributes == null || attributes.isEmpty) return this;
+    assert(
+      !_telemetry.strict || firstInvalidKey(attributes) == null,
+      'an attribute key is OpenTelemetry-named: lowercase, dot-namespaced, snake_case within a '
+      'segment, at least two segments (app.pairing.attempt). '
+      'Got: ${firstInvalidKey(attributes)}',
+    );
     (_meta ??= <String, Object?>{}).addAll(attributes);
     return this;
   }
 
   /// Attaches the error this event is about. When it carries a stack trace of
   /// its own and none was set, that trace is adopted.
+  @UseResult(_kChain)
   LogDraft cause(Object? error, [StackTrace? stackTrace]) {
+    assert(_loggedLevel == null, 'A draft is described before it is logged; this one already logged.');
     _error = error;
     if (stackTrace != null) {
       _stackTrace = stackTrace;
@@ -126,29 +117,38 @@ final class LogDraft {
     return this;
   }
 
-  /// The localized, user-facing sentence for this event, shown by [toast].
-  ///
-  /// The log body stays a stable English line, the crash reporter's grouping
-  /// key; the user reads this instead.
+  /// The localized sentence [toast] shows the user. The body stays stable
+  /// English, since a crash reporter groups on it.
+  @UseResult(_kChain)
   LogDraft description(String? text) {
+    assert(_loggedLevel == null, 'A draft is described before it is logged; this one already logged.');
     _description = text;
     return this;
   }
 
-  /// Sets [LogEvent.name], the identity that outlives a copy edit to the body.
+  /// Sets [LogEvent.name], the identity that survives a copy edit to the body.
   ///
   /// Lowercase and dot-separated, `area.operation.outcome`. A crash reporter's
   /// fingerprint and `ReportThrottle` key on it once it is set.
+  @UseResult(_kChain)
   LogDraft name(String value) {
+    assert(_loggedLevel == null, 'A draft is described before it is logged; this one already logged.');
+    assert(
+      !_telemetry.strict || kEventName.hasMatch(value),
+      'an event name is lowercase, dot-separated, at least two segments '
+      '(pairing.handshake.refused). Got: $value',
+    );
     _name = value;
     return this;
   }
 
-  /// Marks a [trace] line as noise of tier [level] (1 loud … 6 whisper),
-  /// filtered by `TelemetryOptions.maxVerbosity` and `LogBuffer.maxVerbosity`.
-  /// `Telemetry.v1` … `v6` are the short form; this is for a trace line that
-  /// also carries attributes or a cause.
+  /// Marks a [trace] line as tier [level], 1 loud to 6 a whisper, filtered by
+  /// `TelemetryOptions.maxVerbosity` and `LogBuffer.maxVerbosity`.
+  /// `Telemetry.v1` to `v6` are the short form; this one also takes attributes.
+  @UseResult(_kChain)
   LogDraft verbosity(int level) {
+    assert(_loggedLevel == null, 'A draft is described before it is logged; this one already logged.');
+    assert(level >= 1 && level <= 6, 'a trace tier is 1 (loud) to 6 (a whisper). Got: $level');
     _verbosity = level;
     return this;
   }
@@ -167,144 +167,142 @@ final class LogDraft {
   /// Logs at [LogLevel.warn]. Null when nothing consumes that level.
   LogEvent? warn() => _log(.warn);
 
-  /// Logs at [LogLevel.error]. Reported to the crash reporter automatically.
+  /// Logs at [LogLevel.error]. A `ReportingSink` captures it as an incident by
+  /// default.
   LogEvent? error() => _log(.error);
 
-  /// Logs at [LogLevel.fatal]. Reported to the crash reporter automatically.
+  /// Logs at [LogLevel.fatal]. A `ReportingSink` captures it as an incident.
   LogEvent? fatal() => _log(.fatal);
 
-  /// Logs at a [level] computed at runtime, for a transport whose severity
-  /// depends on the outcome or a bridge from another logging package. Call sites
-  /// that know their severity name it ([warn], [error], …).
+  /// Logs at a [level] computed at runtime, for a bridge or a transport whose
+  /// severity depends on the outcome. A call site that knows its severity names
+  /// it instead.
   LogEvent? at(LogLevel level) => _log(level);
 
   // --- Channel actions ---------------------------------------------------
 
-  /// Shows the user a message: [text] when given, otherwise [description]. With
-  /// neither, debug asserts and release falls back to the body, so a toast is
-  /// never blank and never crashes.
-  void toast({ToastTone tone = .info, String? text}) {
-    final message = text ?? _description;
-    assert(
-      message != null,
-      'toast() needs user-facing text: pass text:, or set .description(...). '
-      'the log body is developer English and must not reach the UI',
-    );
-    _act();
-    _channels.add(
-      (event) => _telemetry.dispatchToast(ToastRequest(tone: tone, text: message ?? event.body, event: event)),
-    );
-  }
-
-  /// Sends this event to the crash reporter.
+  /// Shows the user [text], or [description] when it is null.
   ///
-  /// Below [LogLevel.error] it arrives as a structured log, making a warning
-  /// visible without filing an issue; pass [level] to capture it as an incident
-  /// anyway. A no-op when the event is logged at `error` or above, since the
-  /// reporting sink already captured it and a second send would duplicate the
-  /// issue. That check runs once the event exists, so it does not depend on
-  /// where in the cascade this call sits.
-  void escalate({LogLevel? level, StackTrace? stackTrace}) {
+  /// Both are read when the cascade ends, so `..toast()` written above
+  /// `..description(...)` still says what the description says. With neither,
+  /// the body is shown and debug prints a diagnostic to the root zone.
+  void toast({ToastTone tone = .info, String? text}) {
     _act();
-    _channels.add((event) {
-      if (event.level >= .error) return;
-      _telemetry.dispatchEscalation(event, level: level, stackTrace: stackTrace ?? event.stackTrace);
+    _channels!.add((event) {
+      final message = text ?? _description;
+      // The standard debug-only idiom; the body runs only in debug builds.
+      // ignore: avoid-immediately-invoked-functions
+      assert(() {
+        if (message == null) {
+          Zone.root.print(
+            'Telemetry | toast | no user-facing text for "${event.body}": pass text:, or set '
+            '.description(...). The log body is developer English and must not reach the UI',
+          );
+        }
+        return true;
+      }(), 'unreachable: the closure only reports');
+      _telemetry.dispatchToast(ToastRequest(tone: tone, text: message ?? event.body, event: event));
     });
   }
 
-  /// Sends this event to the crash reporter.
-  @Deprecated('Renamed to escalate(): the destination is an EscalationSink, not a vendor. Removed in 0.3.0.')
-  void sentry({LogLevel? level, StackTrace? stackTrace}) => escalate(level: level, stackTrace: stackTrace);
+  /// Sends this event to the crash reporter's [EscalationSink].
+  ///
+  /// The sink decides what becomes of it. A `ReportingSink` captures it as an
+  /// incident at or above its `captureLevel`, and sends it as a structured log
+  /// below that, so a warning is visible without filing an issue. [level]
+  /// overrides the severity for this escalation only.
+  ///
+  /// Escalating an event the sink already captured costs nothing: the shared
+  /// `ReportThrottle` identity refuses the second capture. [level] and
+  /// [stackTrace] therefore cannot change a capture that already happened.
+  /// Attach the trace at the failure, with `.cause(error, stackTrace)`.
+  void escalate({LogLevel? level, StackTrace? stackTrace}) {
+    _act();
+    _channels!.add(
+      (event) => _telemetry.dispatchEscalation(event, level: level, stackTrace: stackTrace ?? event.stackTrace),
+    );
+  }
 
   /// Records a product-analytics event. No tracker ships by default.
   ///
-  /// [name] is a product vocabulary, not a log body: lowercase snake_case, one
-  /// of a bounded set the application owns. Analytics backends cap that set —
-  /// Firebase at 500 distinct names and 25 properties per event — so a name
-  /// built from a value exhausts it.
+  /// [name] is a product vocabulary rather than a log body: lowercase
+  /// snake_case, out of a bounded set the application owns. Backends cap that
+  /// set, Firebase at 500 names and 25 properties per event, so a name built out
+  /// of a value exhausts it.
   void track(String name, {Map<String, Object?> props = const <String, Object?>{}}) {
+    assert(
+      !_telemetry.strict || kTrackName.hasMatch(name),
+      'an analytics event name is one lowercase snake_case word out of a bounded set '
+      '(purchase_completed). Got: $name',
+    );
     _act();
-    _channels.add((event) => _telemetry.dispatchTrack(name, props, event));
+    // Copied: the fan-out is a microtask away, and a caller may reuse its map
+    // before then.
+    final payload = props.isEmpty ? const <String, Object?>{} : Map<String, Object?>.of(props);
+    _channels!.add((event) => _telemetry.dispatchTrack(name, payload, event));
   }
 
-  /// Writes a row into the app's notification inbox. Always an explicit decision
-  /// by the code that knows the user missed something; never derived from
-  /// severity.
+  /// Writes a row into the app's notification inbox. Always explicit, never
+  /// derived from severity.
   void notify(Object kind, {Map<String, Object?> args = const <String, Object?>{}}) {
     _act();
-    _channels.add((event) => _telemetry.dispatchNotify(kind, args, event));
+    final payload = args.isEmpty ? const <String, Object?>{} : Map<String, Object?>.of(args);
+    _channels!.add((event) => _telemetry.dispatchNotify(kind, payload, event));
   }
 
   // --- Internals ---------------------------------------------------------
 
-  /// Reports this draft if nothing ever acted on it. Debug only; called by
-  /// [Telemetry], not directly.
-  ///
-  /// A line, not a thrown `AssertionError`: the throw left a bare microtask and
-  /// arrived as an uncaught zone error, which an app with `logZoneError` wired
-  /// then recorded as `Zone | uncaught | error` — a defect-severity line about a
-  /// missing terminal call, in the one place a reader is looking for real ones.
-  @internal
-  void reportIfUnused() {
-    if (_acted) return;
-    // Before the log, so the warning's own draft cannot re-enter this one.
-    _acted = true;
-    _telemetry.w('Telemetry | draft | unused', meta: <String, Object?>{'log.body': _bodyText()});
-  }
-
   /// The level of a draft that reached a channel without naming one.
   ///
-  /// `warn`, never `error`, when a cause is attached: `error` is auto-reported,
-  /// so deriving it from an attached exception would file a crash-reporter issue
-  /// for a forgotten `..warn()`.
+  /// `warn` when a cause is attached, never `error`: a reporting sink captures
+  /// `error`, so a forgotten `..warn()` would file an incident.
   LogLevel _implicitLevel() => _error == null ? .info : .warn;
 
   /// The body, building it now if the call site passed a lazy builder.
   String _bodyText() {
     final message = _message;
     if (message is String) return message;
-    if (message is String Function()) return message();
+    if (message is Object Function()) return message().toString();
     return message.toString();
   }
 
-  /// The attributes of the event: the launch's resource, under the ambient
-  /// scope, under what this call site set.
+  /// The ambient scope, under what this call site set. The launch resource is a
+  /// field of its own on [LogEvent].
   Map<String, Object?> _attributes() {
-    final resource = _telemetry.resource;
     final scope = currentTelemetryContext();
     final own = _meta;
-    if (resource.isEmpty && scope.isEmpty) return own == null ? const <String, Object?>{} : _resolve(own);
-    return _resolve(<String, Object?>{...resource, ...scope, ...?own});
+    if (scope.isEmpty) return own == null ? const <String, Object?>{} : resolveAttributes(own);
+    return resolveAttributes(<String, Object?>{...scope, ...?own});
   }
 
   LogEvent _snapshot(LogLevel level) {
     final body = _bodyText();
+    // A `String` body was checked at construction; a lazy one can only be
+    // checked once built.
     assert(
-      _lenient || !_telemetry.strict || _isCanonicalBody(body),
-      'a log body is `Area | operation | message`, the crash reporter\'s grouping key: '
-      'anything variable goes into .meta({...}). '
-      'Set Telemetry.strict = false for a pipeline whose bodies come from elsewhere. Got: $body',
+      _lenient || !_telemetry.strict || _message is String || _isCanonicalBody(body),
+      'a log body is `Area | operation | message`, the crash reporter\'s grouping key. Got: $body',
     );
-    final trace = _telemetry.traceContext?.call();
     return .new(
       level: level,
       body: body,
       name: _name,
-      timestamp: _timestamp ??= _telemetry.clock(),
+      timestamp: _timestamp ??= _telemetry.now(),
       sequence: _telemetry.nextSequence(),
       runId: _telemetry.runId,
       meta: _attributes(),
+      resource: _telemetry.resource,
       error: _error,
       stackTrace: _stackTrace ?? _capturedTrace(level),
       description: _description,
       verbosity: _verbosity,
-      traceId: trace?.traceId,
-      spanId: trace?.spanId,
+      traceId: _trace?.traceId,
+      spanId: _trace?.spanId,
     );
   }
 
-  /// A trace for an event that arrived without one, when the pipeline asks for
-  /// them from this level up.
+  /// A trace for an event that arrived without one, from
+  /// `Telemetry.stackTraceAtLevel` up.
   StackTrace? _capturedTrace(LogLevel level) {
     final floor = _telemetry.stackTraceAtLevel;
     if (floor == null || level < floor) return null;
@@ -312,15 +310,15 @@ final class LogDraft {
   }
 
   LogEvent? _log(LogLevel level) {
-    assert(_loggedLevel == null, 'A draft logs once; this one already logged.');
-    _acted = true;
+    if (_loggedLevel != null) {
+      assert(false, 'A draft logs once; this one already logged at ${_loggedLevel!.name}.');
+      return _event;
+    }
     _loggedLevel = level;
-    // Stamped before the gate, so a channel action that snapshots on the next
-    // microtask still records the moment the call site acted.
-    _timestamp ??= _telemetry.clock();
-    // The `Enabled` check applies here too: building the record copies the
-    // attributes and may run a lazy body.
-    if (!_telemetry.isEnabled(level, verbosity: _verbosity)) return null;
+    // Building the record copies the attributes and may run a lazy body, so the
+    // gate comes first. Nothing above this line allocates or reads the clock.
+    if (!_gated && !_telemetry.isEnabled(level, verbosity: _verbosity)) return null;
+    _mark();
     final event = _event = _snapshot(level);
     _telemetry.emit(event);
     return event;
@@ -328,40 +326,50 @@ final class LogDraft {
 
   /// Marks a non-log action and arms the fan-out.
   void _act() {
-    _acted = true;
-    _timestamp ??= _telemetry.clock();
+    _channels ??= <void Function(LogEvent event)>[];
+    _mark();
     if (_scheduled) return;
     _scheduled = true;
     scheduleMicrotask(_afterActions);
   }
 
-  void _afterActions() {
-    // A channel fired but nothing was logged: log it, so a user-visible effect
-    // always leaves a record.
-    if (_loggedLevel == null) _log(_implicitLevel());
-    if (_channels.isEmpty) return;
-    // `_event` is null when `isEnabled` suppressed the log action; the channels
-    // still need the event they share, so it is built anyway — a toast's
-    // "Details" cannot open a record that was never made.
-    final event = _event ??= _snapshot(_loggedLevel!);
-    for (final channel in _channels) {
-      channel(event);
-    }
-    _channels.clear();
+  /// Stamps the moment the call site acted, and the trace it acted inside.
+  ///
+  /// Read here rather than at snapshot: a channel action snapshots a microtask
+  /// later, when the span may have ended and the clock has moved.
+  void _mark() {
+    if (_timestamp != null) return;
+    _timestamp = _telemetry.now();
+    _trace = _telemetry.traceContext?.call();
   }
 
-  /// Resolves any `Object Function()` value, leaving the map untouched when
-  /// there is none.
-  static Map<String, Object?> _resolve(Map<String, Object?> attributes) {
-    Map<String, Object?>? resolved;
-    for (final MapEntry(:key, :value) in attributes.entries) {
-      if (value is Object Function()) (resolved ??= Map<String, Object?>.of(attributes))[key] = value();
+  void _afterActions() {
+    // A channel fired without a log action: log it, so a user-visible effect
+    // leaves a record.
+    if (_loggedLevel == null) _log(_implicitLevel());
+    final channels = _channels;
+    if (channels == null || channels.isEmpty) return;
+    // `_event` is null when `isEnabled` suppressed the log action. The channels
+    // share one event regardless, so a toast's "Details" has a record to open.
+    final event = _event ??= _snapshot(_loggedLevel!);
+    try {
+      for (final channel in channels) {
+        try {
+          channel(event);
+        } on Object catch (error, stackTrace) {
+          // One failing channel must not swallow the others or escape into the
+          // zone, where the app's error handler would file it as a defect.
+          Zone.root.print('Telemetry | channel | failed for "${event.body}" | $error\n$stackTrace');
+        }
+      }
+    } finally {
+      channels.clear();
     }
-    return resolved ?? attributes;
   }
 
   /// Whether [body] carries at least `Area | operation`.
-  static bool _isCanonicalBody(String body) {
+  static bool _isCanonicalBody(Object body) {
+    if (body is! String) return true;
     final parts = body.split('|');
     return parts.length >= 2 && parts.first.trim().isNotEmpty && parts[1].trim().isNotEmpty;
   }

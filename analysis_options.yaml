@@ -6,3 +6,14 @@ formatter:
 analyzer:
   exclude:
     - build/**
+    # The fixture `test/analyzer_guard_test.dart` runs the analyzer over. Half of
+    # it is meant to fail, which is the assertion.
+    - test/analyzer/fixture/**
+
+dart_code_metrics:
+  rules:
+    # `test/support/` is the shared fixture library the suites import; its
+    # declarations are top-level by necessity.
+    - avoid-top-level-members-in-tests:
+        exclude:
+          - test/support/**

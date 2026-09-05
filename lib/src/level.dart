@@ -6,13 +6,11 @@
 ///   (TRACE 1-4, DEBUG 5-8, INFO 9-12, WARN 13-16, ERROR 17-20, FATAL 21-24).
 ///   Exporters, Sentry's structured logs and stored rows use it.
 /// * [developerLevel] is `package:logging`'s 0-2000 scale, read by
-///   `dart:developer` `log(level:)` and the DevTools Logging view (FINE 500,
-///   INFO 800, WARNING 900, SEVERE 1000, SHOUT 1200). Write-only: the scales
-///   overlap (`300`, `500`, `1000`… are valid on both), so a stored number must
-///   come from one of them, and that one is [severityNumber].
+///   `dart:developer` and the DevTools Logging view. Write-only: the two scales
+///   overlap, so a stored number always comes from [severityNumber].
 ///
-/// How much trace noise is rendered is a separate dial, `LogEvent.verbosity`
-/// with `TelemetryOptions.maxVerbosity`.
+/// Trace noise is a separate dial, `LogEvent.verbosity` with
+/// `TelemetryOptions.maxVerbosity`.
 enum LogLevel implements Comparable<LogLevel> {
   /// Fine-grained tracing: frame-by-frame detail, protocol chatter.
   trace(1, 300),

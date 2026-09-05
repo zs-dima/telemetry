@@ -10,6 +10,12 @@ const String kEsc = '\x1B[';
 /// ANSI reset.
 const String kReset = '${kEsc}0m';
 
+/// ANSI faint, for the parts that repeat from line to line: the time, the keys.
+const String kDim = '${kEsc}2m';
+
+/// Wraps [text] in faint.
+String dim(String text) => '$kDim$text$kReset';
+
 /// Wraps [text] in the ANSI style of [level].
 String colorize(LogLevel level, String text) => '${_style(level)}$text$kReset';
 

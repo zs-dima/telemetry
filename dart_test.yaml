@@ -1,5 +1,11 @@
 platforms:
   - vm
 
+tags:
+  # `test/analyzer_guard_test.dart` spawns `dart analyze` over a fixture, which
+  # is slower than everything else here put together.
+  analyzer:
+    timeout: 2m
+
 file_reporters:
   json: reports/tests.json

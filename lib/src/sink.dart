@@ -4,35 +4,34 @@ import 'package:telemetry/src/level.dart';
 
 /// A destination for logged events: console, journal, breadcrumb trail.
 ///
-/// Sinks are the only place that knows about an output, so the event model can
-/// stay pure Dart while feeding a Flutter toast, a database table and a crash
-/// reporter.
+/// A sink is the only place that knows an output, so the event model stays pure
+/// Dart while feeding a Flutter toast, a database table and a crash reporter.
 abstract interface class TelemetrySink {
   /// Whether this sink wants events of [level] at [verbosity].
   ///
   /// Checked before an event is built, so a disabled sink costs nothing and a
-  /// lazy message is never evaluated (the `Enabled` check of the OpenTelemetry
-  /// logs API, and `slog.Handler.Enabled`).
+  /// lazy message is never evaluated. The `Enabled` check of the OpenTelemetry
+  /// logs API and of `slog.Handler`.
   bool enabled(LogLevel level, int verbosity);
 
   /// Consumes [event].
   ///
   /// Must not throw: the dispatcher isolates failures, but a sink that throws on
   /// every event loses them all. Must not block either, though a batching sink
-  /// may write through synchronously for `error` and `fatal`, so the line before
-  /// a native crash reaches disk.
+  /// may write through for `error` and `fatal`, so the line before a native
+  /// crash reaches disk.
   void handle(LogEvent event);
 }
 
 /// A sink that holds events before they reach their destination.
 ///
-/// The OpenTelemetry SDK's `ForceFlush`: a batching sink trades durability for
-/// throughput, and there are moments — the app going to the background, a
-/// database about to close, the line before a deliberate exit — when the trade
-/// has to be paid back. `Telemetry.flush` asks every sink that implements this.
+/// The OpenTelemetry SDK's `ForceFlush`. A batching sink trades durability for
+/// throughput, and the app going to the background, a database about to close
+/// or a deliberate exit is where that trade is paid back. `Telemetry.flush`
+/// asks every sink that implements this.
 ///
-/// Separate from [TelemetrySink] so a sink that writes through does not have to
-/// implement a method it has no use for.
+/// Separate from [TelemetrySink], so a sink that writes through does not carry a
+/// method it has no use for.
 abstract interface class Flushable {
   /// Writes everything held; completes when it is out of this sink's hands.
   ///
@@ -42,8 +41,8 @@ abstract interface class Flushable {
 
 /// Semantic tone of a user-facing message.
 ///
-/// Lives here rather than in a design system so application logic can name a
-/// tone without importing Flutter; the widget layer maps it to its own palette.
+/// Here rather than in a design system, so application logic can name a tone
+/// without importing Flutter. The widget layer maps it to its own palette.
 enum ToastTone {
   /// Neutral information.
   info,
@@ -82,9 +81,9 @@ abstract interface class ToastSink {
 /// Sends an event to the crash reporter as an explicit escalation.
 ///
 /// `error` and `fatal` are reported automatically by the crash-reporting
-/// [TelemetrySink]. This covers what that leaves open: a lighter line the call
-/// site wants in the reporter as a structured log, or one whose [level] override
-/// marks it an incident.
+/// [TelemetrySink]. This covers the rest: a lighter line the call site wants in
+/// the reporter as a structured log, or one a [level] override marks an
+/// incident.
 abstract interface class EscalationSink {
   /// Escalates [event].
   ///
@@ -93,8 +92,8 @@ abstract interface class EscalationSink {
   void escalate(LogEvent event, {LogLevel? level, StackTrace? stackTrace});
 }
 
-/// Product analytics. No implementation ships; the seat exists so that adding a
-/// tracker later touches this interface and one sink, not every call site.
+/// Product analytics. No implementation ships; the seat exists so adding a
+/// tracker later touches one sink rather than every call site.
 abstract interface class TrackSink {
   /// Records a product event named [name].
   void track(String name, Map<String, Object?> props, LogEvent event);
@@ -102,9 +101,8 @@ abstract interface class TrackSink {
 
 /// Writes a row into an in-app notification inbox.
 ///
-/// [kind] is untyped: the inbox taxonomy belongs to the application. Nothing is
-/// implied from severity; an inbox row is always an explicit decision by the
-/// code that knows the user missed something.
+/// [kind] is untyped, since the inbox taxonomy belongs to the application.
+/// Nothing is implied from severity; a row is always an explicit decision.
 abstract interface class NotifySink {
   /// Records a notification of [kind].
   void notify(Object kind, Map<String, Object?> args, LogEvent event);
