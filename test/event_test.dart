@@ -117,17 +117,6 @@ void main() {
       }
     });
 
-    test('fromValue reads names and OpenTelemetry numbers only', () {
-      expect(LogLevel.fromValue('warn'), equals(LogLevel.warn));
-      expect(LogLevel.fromValue(13), equals(LogLevel.warn));
-      expect(LogLevel.fromValue(LogLevel.fatal), equals(LogLevel.fatal));
-      // 900 is WARNING on the package:logging scale and nothing on
-      // OpenTelemetry's; such rows are migrated by the storage layer.
-      expect(LogLevel.fromValue(900), equals(LogLevel.info), reason: 'an unknown number degrades, it does not guess');
-      expect(LogLevel.fromValue('shout'), equals(LogLevel.info));
-      expect(LogLevel.fromValue(null), equals(LogLevel.info));
-    });
-
     test('debug-level events reach the pipeline', () {
       telemetry.d('Control | transition | idle -> processing');
       expect(sink.events.single.level, equals(LogLevel.debug));

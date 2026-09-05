@@ -60,7 +60,7 @@ across an `await` while a detail is fetched, for one that was dropped.
 Three layers, each winning over the one before it:
 
 ```dart
-log.resource = {'app.version': '1.0.0', 'app.environment': 'prod'};   // the launch
+log.resource = {'service.name': 'auth', 'service.version': '1.0.0'};  // the launch
 log.scoped({'rpc.path': '/auth.v1/SignIn'}, () async {               // the operation
   await client.signIn();                                             // survives awaits
 });
@@ -72,9 +72,11 @@ knows it. It is carried by the `Zone`, so it follows an `await` inside the body 
 a callback registered outside it.
 
 `resource` is OpenTelemetry's `Resource` and stays a field of its own, `LogEvent.resource`, rather
-than being copied into every event's `meta`. It is the same map object on every event, it is not
-rendered on a console line, and a sink reads it through `event.attributes` with everything else. An
-attribute value may be an `Object Function()`, evaluated once and only if the event is built.
+than being copied into every event's `meta`. Its semantic-convention keys are `service.name` (the
+one OpenTelemetry requires), `service.version` and `deployment.environment.name`. It is the same map
+object on every event, it is not rendered on a console line, and a sink reads it through
+`event.attributes` with everything else. An attribute value may be an `Object Function()`, evaluated
+once and only if the event is built.
 
 ```dart
 event.meta        // what varied: the scope, then the call site
@@ -90,8 +92,13 @@ event.attributes  // the flat projection a sink stores: resource, meta, event.na
 log('Sync | upload | refused').name('sync.upload.refused').cause(error).error();
 ```
 
-The body is prose and gets copy-edited. Anything that keys on it, a crash reporter's fingerprint or
-`ReportThrottle`, reads that edit as a new failure. Set a name and those keys stop moving.
+It says that two lines are the same failure however their bodies are worded. `ReportThrottle`
+dedupes on it, and a crash reporter should fingerprint on it. Without a name both fall back to the
+body, so a reworded body is a new group.
+
+The record also carries `severityNumber`, the OpenTelemetry number to store or export. It is the
+level's own number everywhere but `trace`, which spends the four numbers of its range on the
+verbosity tiers, and `LogLevel.fromValue` reads all 24 back.
 
 ## Trace correlation
 
@@ -206,15 +213,16 @@ three and would take the place of `event.area`. Most terminals draw an emoji two
 pick glyphs of one width. The forms with a variation selector (`⚠️`, `⚙️`) align better than the
 bare ones.
 
-Colours are turned off automatically where the destination cannot render them: `NO_COLOR` (which
-wins over everything), `TERM=dumb`, a browser console, DevTools, and any run without a terminal
-except on a phone, since a redirect to a file must not collect escape codes. `FORCE_COLOR` turns
-them back on.
+`printColors` is honoured as written, on every destination, the way `package:l` does it. A Flutter
+app has no terminal of its own, so no probe can answer for it. Say true where what reads the output
+renders escapes: a terminal, and the browser console, which gets `%c` styling instead. Say false
+where it shows them as text: the DevTools Logging view, and `print` read in Firefox or Safari. A CLI
+that may be redirected passes `stdout.supportsAnsiEscapes`.
 
 `LogOutput.developer` goes to `dart:developer`'s `log()` on the VM and to the browser console on the
-web, where that function is a no-op. The `print` destination splits its output at every newline and
-every 1000 code units, never through a surrogate pair, because Android's logger truncates a call at
-about 4 KB and the casualty is the stack trace being chased.
+web, where dart2js and dart2wasm share a patch whose body is empty. The `print` destination splits
+its output at every newline and every 1000 code units, never through a surrogate pair, because
+Android's logger truncates a call at about 4 KB and the casualty is the stack trace being chased.
 
 ## What it costs
 
@@ -248,6 +256,13 @@ and JSON serialization of an event. Each has a precedent worth copying and none 
 yet; a sink does its own redaction today, and the throttle is a deterministic dedupe rather than a
 sampler.
 
+Also absent, and more common than any of those: a minimum level per area, the way Serilog's
+`MinimumLevel.Override`, .NET's category rules and `tracing`'s `EnvFilter` do it. The noise dial
+here is the verbosity tier chosen at the call site, under `maxVerbosity`, and a zone can tighten
+options for one region of code. A sink that wants less can filter on `event.area` in `handle`; there
+is no gate by area before the record is built. `flush` has no deadline either: wrap it in
+`Future.timeout` where one is needed.
+
 ## Migrating from 0.2
 
 - **`event.meta` no longer holds the launch attributes.** A sink that stored `meta` should store
@@ -264,6 +279,13 @@ sampler.
 - **`kAttributeKey`, `kEventName` and `kTrackName` are exported**, so a source-scanning test in an
   application can assert the same rule the runtime asserts.
 
+And from 0.3.0:
+
+- **`printColors` reaches every destination.** The sink no longer turns colours off for
+  `LogOutput.developer`. Pair that destination with `printColors: false`, since the DevTools
+  Logging view stores the escapes in the message.
+- **`LogBuffer.events` returns a `List` snapshot**, so a journal can log while it drains.
+
 ## Install
 
 ```yaml
@@ -271,17 +293,18 @@ dependencies:
   telemetry:
     git:
       url: https://github.com/zs-dima/telemetry.git
-      ref: v0.3.0
+      ref: v0.3.1
 ```
 
 ## Credit
 
-Thanks to Plague Fox for [`package:l`](https://github.com/PlugFox/l), which the console layer here
-learned from: per-environment delegates, zone-scoped options, `print` capture that forwards to the
-parent zone, release gating, lazy messages, the six trace tiers, and the ANSI palette. `emit` is its
-`l.log(LogMessage)`, generalised.
+Thanks to Mikhail Matiunin (Plague Fox) for [`package:l`](https://github.com/PlugFox/l), which the
+console layer here learned from: per-environment delegates, zone-scoped options, `print` capture
+that forwards to the parent zone, release gating, lazy messages, the six trace tiers, and the ANSI
+palette. `emit` is its `l.log(LogMessage)`, generalised. Colours honoured as written rather than
+probed for is its choice too.
 
-`l` is WTFPL, so nothing obliges this note. The small amount of code carried over is marked where it
+`l` is MIT, Copyright (c) 2023 Matiunin Mikhail; the code carried over keeps that notice where it
 sits, in `lib/src/console/ansi.dart` and `lib/src/zone.dart`. If you want a logger rather than an
 event model with your own sinks, use `l` directly.
 

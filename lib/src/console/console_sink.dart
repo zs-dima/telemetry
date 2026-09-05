@@ -20,8 +20,7 @@ const bool _kReleaseMode = bool.fromEnvironment('dart.vm.product');
 
 /// Renders [event] as the line a console shows.
 ///
-/// [options] arrives with `printColors` already resolved against what the
-/// destination can render, so a formatter only has to read it.
+/// [options] are the ones in force, zone overrides included.
 typedef ConsoleFormat = String Function(LogEvent event, TelemetryOptions options);
 
 /// {@template console_sink}
@@ -58,16 +57,8 @@ final class ConsoleSink implements TelemetrySink {
   /// own delegate.
   final Map<(LogOutput, String), ConsoleDelegate> _delegates = <(LogOutput, String), ConsoleDelegate>{};
 
-  /// Whether each destination renders ANSI. Probed once, for the same reason.
-  final Map<LogOutput, bool> _ansi = <LogOutput, bool>{};
-
-  /// The last colour resolution, cached by the identity of its input: many lines
-  /// share one set of options, and turning colours off allocates a copy.
-  ({TelemetryOptions from, TelemetryOptions to})? _colors;
-
   /// Fixed output destination; when null the delegate follows
-  /// [TelemetryOptions.output] and the environment. A delegate given here is
-  /// trusted to render whatever [TelemetryOptions] asks for.
+  /// [TelemetryOptions.output] and the platform.
   final ConsoleDelegate? delegate;
 
   /// The options used when no zone supplies any.
@@ -83,8 +74,8 @@ final class ConsoleSink implements TelemetrySink {
 
   @override
   void handle(LogEvent event) {
-    final resolved = _resolveColors(_options);
-    _delegateFor(resolved).write(event.level, _format(event, resolved));
+    final current = _options;
+    _delegateFor(current).write(event.level, _format(event, current));
   }
 
   /// The built-in renderer, so a custom [ConsoleFormat] can wrap it rather than
@@ -140,26 +131,6 @@ final class ConsoleSink implements TelemetrySink {
     }
     return buffer.toString();
   }
-
-  /// [options] with `printColors` off where the destination cannot render ANSI:
-  /// a browser console shows the escapes, DevTools stores them in the message,
-  /// and a file or a CI log keeps them forever.
-  TelemetryOptions _resolveColors(TelemetryOptions options) {
-    if (!options.printColors || delegate != null) return options;
-    final cached = _colors;
-    if (cached != null && identical(cached.from, options)) return cached.to;
-    final ansi = _ansi.putIfAbsent(options.output, () => _rendersAnsi(options.output));
-    final resolved = ansi ? options : options.copyWith(printColors: false);
-    _colors = (from: options, to: resolved);
-    return resolved;
-  }
-
-  /// Whether [output] renders ANSI. `print` writes to the same process console
-  /// as `platform`, so the platform delegate answers for both.
-  static bool _rendersAnsi(LogOutput output) => switch (output) {
-    .platform || .print => platform_delegate.supportsAnsi(),
-    .developer || .ignore => false,
-  };
 
   ConsoleDelegate _delegateFor(TelemetryOptions options) =>
       delegate ??

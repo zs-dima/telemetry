@@ -15,8 +15,9 @@ enum LogOutput {
 
   /// `dart:developer` `log()`, which the DevTools Logging view reads.
   ///
-  /// On the web that function is a no-op, since the SDK's dart2js patch has an
-  /// empty body, so the console sink sends this to the browser console.
+  /// On the web that function is a no-op, since dart2js and dart2wasm share a
+  /// patch with an empty body, so the console sink sends this to the browser
+  /// console instead.
   developer,
 
   /// Nothing. Used by tests and by release builds that opt out.
@@ -59,12 +60,16 @@ final class TelemetryOptions {
   /// Whether `print` inside the telemetry zone becomes an event.
   final bool handlePrint;
 
-  /// ANSI colours, where the destination renders them: the level tag in its
-  /// level's colour, the time and the attribute keys dimmed, nothing else.
+  /// ANSI colours: the level tag in its level's colour, the time and the
+  /// attribute keys dimmed, nothing else.
   ///
-  /// The sink turns them off by itself for a browser console, DevTools, a file,
-  /// a pipe, and wherever the environment says so. This only says whether they
-  /// are wanted at all.
+  /// Honoured as written, on every destination, the way `package:l` does it.
+  /// A Flutter app has no terminal of its own, so no probe can answer for it.
+  /// Say true where what reads the output renders escapes: a terminal, the
+  /// browser console (which gets `%c` styling instead), Chrome's own console
+  /// view of `print`. Say false where it shows them as text: the DevTools
+  /// Logging view, and `print` read in Firefox or Safari. A CLI that may be
+  /// redirected passes `stdout.supportsAnsiEscapes`.
   final bool printColors;
 
   /// Whether the console sink writes in release builds.

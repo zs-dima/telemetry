@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-09-05
+
+A review round against the OpenTelemetry logs spec, the Dart and Flutter sources, and the practice
+of `slog`, Serilog, `tracing`, `tint`, `zerolog` and `package:l`. It corrects statements that were
+not true, widens the severity range to the one the spec defines, and removes the last place where
+the package guessed something only the application knows.
+
+### Changed
+
+- **`printColors` reaches every destination.** The sink used to turn colours off for
+  `LogOutput.developer` and for `print` on the web, which is the same guess that 0.3.0 removed for
+  terminals: Chrome renders escapes in `console.log`, and nothing here can know what reads the
+  `dart:developer` stream. Pair `LogOutput.developer` with `printColors: false`, since the DevTools
+  Logging view stores the escapes in the message.
+- **`LogLevel.fromValue` reads the whole 1 to 24 range**, four numbers per level, so a row written
+  by another exporter or from `LogEvent.severityNumber` comes back as the level it was. It used to
+  match the six lower bounds only, and read `TRACE2` as `info`.
+- **`LogBuffer.events` returns a `List` snapshot** in every case. It handed out the live queue when
+  one ring was empty, so a sink that logged while a journal drained could break the iteration.
+
+### Added
+
+- **`LogEvent.severityNumber`**: the number to store or export. `LogLevel.severityNumber` for every
+  level but `trace`, which spends the four numbers of its range on the verbosity tiers, as the spec
+  asks of a source with several severities in one range.
+- **`LogEvent.site`**: `Area | operation`, the body without the segment a call site writes freely.
+  What a breadcrumb or a category wants when the message may carry a user-authored label.
+- **`Telemetry.sinks`**: the registered sinks, unmodifiable. Both applications kept their own
+  bookkeeping to answer whether the sink they built was still the live one.
+
+### Fixed
+
+- `package:l` is MIT, Copyright (c) 2023 Matiunin Mikhail, not WTFPL. The notice now sits with the
+  code carried over, in `lib/src/console/ansi.dart` and `lib/src/zone.dart`.
+- `debugPrintThrottled` paces 12K characters per second, not 12 KB.
+- `dart:developer`'s `log()` is a no-op under dart2js and dart2wasm alike; they share one patch.
+- `ReportingSink` documents two floors, not three.
+- `LogEvent.name` said `ReportThrottle` reads a copy edit as a new failure. The throttle is
+  per-process memory; what a name does is group lines that say the same thing in different words,
+  and pin the crash reporter's fingerprint.
+- `error` and `fatal` are no longer documented as "auto-reported": the line is the reporting sink's
+  capture floor, which is that level by default.
+
 ## [0.3.0] - 2026-09-05
 
 A correction release: 0.2.x got the shape right and several details wrong. Everything here came out
@@ -15,8 +58,7 @@ of reviewing it against the OpenTelemetry logs data model, `log/slog`, `tracing`
 
 - **The console line has one colour and two dims.** The level tag is coloured, the time and the
   attribute keys are faint (`ESC[2m`), and the body, the values and the error stay plain. That is
-  the layout of `tint`, `zerolog`'s console writer and `charmbracelet/log`. Dim follows colour: the
-  sink turns both off for a browser console, DevTools, a pipe or `NO_COLOR`.
+  the layout of `tint`, `zerolog`'s console writer and `charmbracelet/log`. Dim follows colour.
 - **`Telemetry.resource` is a field on the record, not a copy in every event's `meta`.**
   OpenTelemetry keeps `Resource` apart from record `Attributes` because it does not vary per
   occurrence. `LogEvent.resource` holds the launch map by reference, `meta` is the scope and the
@@ -53,15 +95,17 @@ of reviewing it against the OpenTelemetry logs data model, `log/slog`, `tracing`
   `maxVerbosity` never could.
 - **`LogOutput.developer` reaches the browser console on the web**, where `dart:developer`'s `log()`
   is a no-op and every line was being dropped.
-- **The ANSI decision is a policy rather than a guess.** `NO_COLOR` wins over an attached terminal,
-  `FORCE_COLOR` turns colours on, and a run without a terminal only gets them on a phone. A
-  redirect to a file was collecting escape codes.
+- **`printColors` is honoured as written.** 0.2 suppressed colours wherever it guessed the
+  destination could not render them, and the guess said no for every Flutter app on a desktop,
+  which has no terminal of its own. Now the app decides, the way `package:l` does it; a CLI passes
+  `stdout.supportsAnsiEscapes`. Only DevTools and `print` on the web, which store the escapes as
+  text, stay plain.
 - **Console values are escaped, not just quoted.** A carriage return, a tab, a backslash and every
   other control character are escaped; an ESC in a value can no longer drive the terminal. The body
   and the error text get the same treatment.
 - **`print` output wraps at 1000 code units**, never through a surrogate pair. The old 800 cited
-  `debugPrintThrottled`, which throttles to 12 KB/s and does not wrap unless asked; the real limit
-  is Android's ~4 KB per call.
+  `debugPrintThrottled`, which paces 12K characters per second and does not wrap unless asked; the
+  real limit is Android's ~4 KB per call.
 - **`removeSink` and `flush` compare by identity**, so two sinks that happen to be equal are still
   two destinations.
 - `ReportThrottle` prunes its dedupe map before the ceiling check rather than after, so it prunes
@@ -84,7 +128,7 @@ of reviewing it against the OpenTelemetry logs data model, `log/slog`, `tracing`
   test can assert the rule the runtime asserts rather than a copy of it that drifts.
 - `LogEvent.resource` and `copyWith(resource:)`; `LogEvent.attributes` is computed once and cached.
 - `LogBuffer.traceLimit`.
-- `ansiSupport(...)`, the ANSI policy as a pure function, so it can be tested rather than guessed at.
+- The browser console shows the colours: `JsConsoleDelegate` turns the escapes into `%c` styling.
 - `PrintConsoleDelegate`, `IgnoreConsoleDelegate`, `DeveloperConsoleDelegate`, `wrapForPrint` and
   `kPrintWrapWidth` are exported. The package's own tests had to reach into `src/` for them.
 - `make bench`, a compiled micro-benchmark of the hot paths, and the numbers in the README.

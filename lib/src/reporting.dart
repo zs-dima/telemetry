@@ -7,7 +7,7 @@ import 'package:telemetry/src/throttle.dart';
 /// {@template reporting_sink}
 /// The crash-reporting end of a pipeline, minus the vendor.
 ///
-/// Three destinations and three independent thresholds, the shape of Sentry's
+/// Three destinations behind two independent floors, the shape of Sentry's
 /// `LoggingIntegration` (`minBreadcrumbLevel`, `minEventLevel`,
 /// `minSentryLogLevel`):
 ///
@@ -81,6 +81,11 @@ abstract base class ReportingSink implements TelemetrySink, EscalationSink {
   void breadcrumb(LogEvent event);
 
   /// Files [event] as an incident at [level]. Already past [throttle].
+  ///
+  /// A fingerprint set here should key on [LogEvent.name] and the error type
+  /// when the call site named the event, which is what [ReportThrottle.identityOf]
+  /// dedupes on, so the reporter groups what the throttle counted as one
+  /// failure. An unnamed event is better left to the reporter's own grouping.
   @protected
   void capture(LogEvent event, LogLevel level, StackTrace? stackTrace);
 

@@ -10,8 +10,9 @@ import 'package:telemetry/src/level.dart';
 /// code units stays under 4 KB even at three bytes per character in UTF-8.
 ///
 /// Flutter's `debugPrintThrottled` solves the neighbouring problem, pacing
-/// output to 12 KB per second, and wraps only when a caller passes a width.
-/// This is the width, not the pace: a console sink should not hold lines back.
+/// output to 12K characters per second, and wraps only when a caller passes a
+/// width. This is the width, not the pace: a console sink should not hold lines
+/// back.
 const int kPrintWrapWidth = 1000;
 
 /// {@template print_console_delegate}

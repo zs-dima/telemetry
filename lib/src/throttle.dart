@@ -71,10 +71,13 @@ class ReportThrottle {
 
   /// The identity two failures share when they are "the same failure".
   ///
-  /// [LogEvent.name] when the call site set one, since it survives a copy edit
-  /// to the body. Otherwise the body names the site, truncated to 80 units; the
-  /// key only has to be stable, so a split surrogate pair is harmless. The error
-  /// type separates causes at the same site.
+  /// [LogEvent.name] when the call site set one, so lines that say the same
+  /// thing in different words are one failure. Otherwise the body, truncated to
+  /// 80 units; a split surrogate pair is harmless, since the key only has to be
+  /// stable within a run. The error type separates causes at the same site.
+  ///
+  /// The body rather than [LogEvent.site]: two outcomes of one operation are two
+  /// failures, and merging them would hide the second for a whole window.
   static String identityOf(LogEvent event) {
     final site = event.name ?? _prefix(event.body);
     return '$site#${event.error?.runtimeType}';

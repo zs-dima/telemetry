@@ -80,15 +80,16 @@ abstract interface class ToastSink {
 
 /// Sends an event to the crash reporter as an explicit escalation.
 ///
-/// `error` and `fatal` are reported automatically by the crash-reporting
-/// [TelemetrySink]. This covers the rest: a lighter line the call site wants in
-/// the reporter as a structured log, or one a [level] override marks an
-/// incident.
+/// The crash-reporting [TelemetrySink] captures on its own from its capture
+/// floor up, `error` by default. This covers the rest: a lighter line the call
+/// site wants in the reporter as a structured log, or one a [level] override
+/// marks an incident.
 abstract interface class EscalationSink {
   /// Escalates [event].
   ///
-  /// [level] overrides the event's own severity for this escalation only: below
-  /// `error` the event becomes a structured log, at `error` and above an issue.
+  /// [level] overrides the event's own severity for this escalation only. The
+  /// sink's capture floor decides what that becomes: a structured log below it,
+  /// an incident at or above.
   void escalate(LogEvent event, {LogLevel? level, StackTrace? stackTrace});
 }
 

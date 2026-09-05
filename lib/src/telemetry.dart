@@ -30,10 +30,6 @@ final class Telemetry {
   /// {@macro telemetry}
   Telemetry({required this.runId, LogBuffer? buffer}) : buffer = buffer ?? LogBuffer();
 
-  /// The registered sinks, replaced rather than mutated, so a sink that adds or
-  /// removes one while handling an event cannot corrupt [emit]'s iteration.
-  List<TelemetrySink> _sinks = const <TelemetrySink>[];
-
   /// Sinks that already reported a failure. A broken sink is usually broken for
   /// every event, and one report per event would bury the log.
   final Set<TelemetrySink> _failedSinks = Set<TelemetrySink>.identity();
@@ -91,6 +87,18 @@ final class Telemetry {
   /// `LogDraft(..., lenient: true)`.
   bool strict = true;
 
+  /// The registered sinks, in the order they were added.
+  ///
+  /// Unmodifiable, and replaced rather than mutated by [addSink] and
+  /// [removeSink], so a held reference goes stale rather than changing under a
+  /// reader. For code that has to know whether the sink it built is still the
+  /// live one, which the slots ([toastSink] and the rest) answer by identity.
+  List<TelemetrySink> get sinks => _sinks;
+
+  /// Replaced rather than mutated, so a sink that adds or removes one while an
+  /// event is being dispatched cannot corrupt [emit]'s iteration.
+  List<TelemetrySink> _sinks = const <TelemetrySink>[];
+
   final StreamController<LogEvent> _events = StreamController<LogEvent>.broadcast();
 
   /// Every event that was built, as it is dispatched.
@@ -102,8 +110,9 @@ final class Telemetry {
 
   /// What identifies this launch, carried by every event as [LogEvent.resource].
   ///
-  /// OpenTelemetry's `Resource`: `app.version`, `app.environment`, a device
-  /// model. It identifies the source rather than the occurrence, so it is not
+  /// OpenTelemetry's `Resource`: `service.name`, `service.version`,
+  /// `deployment.environment.name`, a device model. It identifies the source
+  /// rather than the occurrence, so it is not
   /// copied into each event's `meta` and not rendered on a console line. Set it
   /// once during initialization; anything that varies per operation belongs in a
   /// scope or at the call site.
@@ -118,7 +127,7 @@ final class Telemetry {
     assert(
       !strict || firstInvalidKey(value) == null,
       'a resource key is OpenTelemetry-named: lowercase, dot-namespaced, snake_case within a '
-      'segment, at least two segments (app.version). Got: ${firstInvalidKey(value)}',
+      'segment, at least two segments (service.version). Got: ${firstInvalidKey(value)}',
     );
     _resource = value.isEmpty ? const <String, Object?>{} : Map<String, Object?>.unmodifiable(resolveAttributes(value));
   }
@@ -326,7 +335,8 @@ final class Telemetry {
   /// Writes through every sink that holds events, and waits for them.
   ///
   /// The OpenTelemetry SDK's `ForceFlush`. A sink that throws is reported to the
-  /// root zone and does not stop the others.
+  /// root zone and does not stop the others. There is no deadline here; wrap the
+  /// call in `Future.timeout` where one is needed.
   Future<void> flush() async {
     // One identity set, so a class registered as both a sink and the escalation
     // destination, which a crash reporter usually is, flushes once. Two equal

@@ -337,61 +337,6 @@ void main() {
     });
   });
 
-  group('the ANSI decision', () {
-    bool ansi({
-      bool hasTerminal = false,
-      bool terminalSupportsAnsi = false,
-      Map<String, String> environment = const <String, String>{},
-      bool isMobile = false,
-    }) => vm_delegate.ansiSupport(
-      hasTerminal: hasTerminal,
-      terminalSupportsAnsi: terminalSupportsAnsi,
-      environment: environment,
-      isMobile: isMobile,
-    );
-
-    test('NO_COLOR wins over an attached terminal', () {
-      // The convention is unconditional; consulting it only when there is no
-      // terminal is the same as not honouring it at all.
-      expect(ansi(hasTerminal: true, terminalSupportsAnsi: true), isTrue);
-      expect(
-        ansi(hasTerminal: true, terminalSupportsAnsi: true, environment: const {'NO_COLOR': '1'}),
-        isFalse,
-      );
-    });
-
-    test('FORCE_COLOR turns them on where nothing else would', () {
-      expect(ansi(environment: const {'FORCE_COLOR': '1'}), isTrue);
-      expect(
-        ansi(environment: const {'FORCE_COLOR': '1', 'NO_COLOR': '1'}),
-        isFalse,
-        reason: 'off wins over on: an escape in a file cannot be taken back',
-      );
-    });
-
-    test('TERM=dumb says no', () {
-      expect(ansi(hasTerminal: true, terminalSupportsAnsi: true, environment: const {'TERM': 'dumb'}), isFalse);
-    });
-
-    test('a terminal answers for itself', () {
-      expect(ansi(hasTerminal: true, terminalSupportsAnsi: false), isFalse);
-      expect(ansi(hasTerminal: true, terminalSupportsAnsi: true), isTrue);
-    });
-
-    test('without a terminal, only a phone gets colours', () {
-      // A phone's output is read through `flutter run` or the device log, both
-      // of which render escapes; everywhere else it is a file, a pipe or a CI
-      // log.
-      expect(ansi(isMobile: true), isTrue);
-      expect(ansi(), isFalse, reason: 'a redirect must not collect escape codes');
-    });
-
-    test('the real probe answers with the same policy', () {
-      // Under `dart test` there is no terminal and this is not a phone.
-      expect(vm_delegate.supportsAnsi(), isFalse);
-    });
-  });
-
   group('the print destination', () {
     test('under `dart test` the platform delegate is the print one', () {
       expect(vm_delegate.createConsoleDelegate(), isA<PrintConsoleDelegate>());
@@ -433,6 +378,49 @@ void main() {
     });
   });
 
+  group('browser styling', () {
+    test('a line with no escapes is left for the plain call', () {
+      expect(browserStyled('[I] Rpc | call | ok'), isNull);
+    });
+
+    test('each escape becomes a marker and one CSS declaration', () {
+      final line = ConsoleSink.render(_event(level: .error), const TelemetryOptions(showTime: false));
+      final styled = browserStyled(line);
+
+      expect(styled, isNotNull);
+      expect(styled!.format, equals('%c[E]%c Rpc | call | ok'));
+      expect(styled.styles, equals(<String>['color:#e2504a;font-weight:normal', 'font-weight:normal']));
+      expect(styled.format.contains(kEsc), isFalse, reason: 'no escape survives the translation');
+    });
+
+    test('bold then red is one marker, and a reset drops both', () {
+      final styled = browserStyled(ConsoleSink.render(_event(level: .fatal), const TelemetryOptions(showTime: false)));
+
+      expect(styled!.format, equals('%c[F]%c Rpc | call | ok'));
+      expect(styled.styles, equals(<String>['color:#e2504a;font-weight:bold', 'font-weight:normal']));
+    });
+
+    test('the dimmed time and keys get their own tone', () {
+      final styled = browserStyled(
+        ConsoleSink.render(_event(meta: const <String, Object?>{'rpc.path': '/x'}), .defaults),
+      );
+
+      expect(styled!.styles.first, equals('color:#9a9a9a;font-weight:normal'));
+      expect(styled.format, contains('%crpc.path=%c/x'));
+    });
+
+    test('a percent in the text is doubled, since the console reads a format string', () {
+      final styled = browserStyled(
+        ConsoleSink.render(
+          _event(meta: const <String, Object?>{'app.battery': '80%'}),
+          const TelemetryOptions(showTime: false),
+        ),
+      );
+
+      expect(styled!.format, endsWith('80%%'));
+    });
+  });
+
   group('colour resolution', () {
     test('a supplied delegate is trusted with whatever the options ask for', () {
       final lines = <String>[];
@@ -443,43 +431,28 @@ void main() {
       expect(lines.single, startsWith(kEsc), reason: 'a test delegate decides for itself');
     });
 
-    test('DevTools and the bin never get escapes, whatever printColors says', () {
+    test('the destination never overrides printColors', () {
+      // The sink asks nothing of the environment: only the app knows what reads
+      // its output. A destination that shows escapes as text is paired with
+      // `printColors: false` by the app that chose it.
       for (final output in <LogOutput>[.developer, .ignore]) {
-        final seen = <bool>[];
-        Telemetry(runId: 'run-c2')
-          ..addSink(
-            ConsoleSink(
-              // No delegate: the sink resolves colours against the destination.
-              options: TelemetryOptions(showTime: false, output: output),
-              format: (event, options) {
-                seen.add(options.printColors);
-                return '';
-              },
-            ),
-          )
-          ..i('Rpc | call | ok');
+        for (final colors in <bool>[true, false]) {
+          final seen = <bool>[];
+          Telemetry(runId: 'run-c2')
+            ..addSink(
+              ConsoleSink(
+                options: TelemetryOptions(showTime: false, output: output, printColors: colors),
+                format: (event, options) {
+                  seen.add(options.printColors);
+                  return '';
+                },
+              ),
+            )
+            ..i('Rpc | call | ok');
 
-        expect(seen.single, isFalse, reason: '${output.name} stores the escapes rather than rendering them');
+          expect(seen.single, equals(colors), reason: '${output.name} with printColors: $colors');
+        }
       }
-    });
-
-    test('the resolution is cached, so a quiet destination costs one copy, not one per line', () {
-      final seen = <TelemetryOptions>[];
-      final pipeline = Telemetry(runId: 'run-c4')
-        ..addSink(
-          ConsoleSink(
-            options: const TelemetryOptions(showTime: false, output: .developer),
-            format: (event, options) {
-              seen.add(options);
-              return '';
-            },
-          ),
-        )
-        ..i('Rpc | call | one')
-        ..i('Rpc | call | two');
-
-      expect(pipeline.buffer.length, equals(2));
-      expect(identical(seen.first, seen.last), isTrue);
     });
   });
 

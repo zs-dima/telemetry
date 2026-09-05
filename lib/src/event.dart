@@ -46,9 +46,10 @@ final class LogEvent {
   /// A stable identifier for this kind of event, independent of [body].
   ///
   /// OpenTelemetry's `EventName`, .NET's `EventId`, the error slug of wide
-  /// events: `pairing.handshake.refused`. The body is prose and gets
-  /// copy-edited, and a crash reporter's fingerprint or `ReportThrottle` then
-  /// reads that edit as a new failure. Set this and those keys stop moving.
+  /// events: `pairing.handshake.refused`. It says that two lines are the same
+  /// failure however their bodies are worded, which is what `ReportThrottle`
+  /// dedupes on and what a crash reporter should fingerprint on. Without it
+  /// both fall back to the body, and a reworded body is a new group.
   final String? name;
 
   /// What this occurrence said: the ambient scope, then the call site's own
@@ -67,9 +68,12 @@ final class LogEvent {
   /// model.
   ///
   /// OpenTelemetry's `Resource`, kept apart from [meta] because it does not vary
-  /// per occurrence. The same map object travels on every event, at one
-  /// reference each. `Telemetry.resource` makes it unmodifiable; code that
-  /// builds a [LogEvent] by hand must not mutate what it passes here.
+  /// per occurrence. Its semantic-convention keys are `service.name` (the one
+  /// OpenTelemetry requires), `service.version` and `deployment.environment.name`.
+  ///
+  /// The same map object travels on every event, at one reference each.
+  /// `Telemetry.resource` makes it unmodifiable; code that builds a [LogEvent]
+  /// by hand must not mutate what it passes here.
   final Map<String, Object?> resource;
 
   /// The error this event is about, if any.
@@ -109,8 +113,11 @@ final class LogEvent {
   /// W3C span id of the span in flight when this was logged, if any.
   final String? spanId;
 
-  /// Sub-level for [LogLevel.trace] noise (1 = loud, 6 = whisper), filtered by
+  /// Sub-level for [LogLevel.trace] noise, 1 loud to 6 a whisper, filtered by
   /// `TelemetryOptions.maxVerbosity` and `LogBuffer.maxVerbosity`.
+  ///
+  /// Zero means an untiered line, which every ceiling admits, and it is what a
+  /// level other than `trace` carries.
   final int verbosity;
 
   /// Everything a sink stores: [resource], then [meta], plus the attributes
@@ -122,6 +129,11 @@ final class LogEvent {
   ///
   /// The stack trace is not included: journal rows and crash reports have a
   /// field of their own for it.
+  ///
+  /// A storage projection rather than the record: `event.name` is written in
+  /// here for a sink whose rows have no field of their own for it, although
+  /// OpenTelemetry deprecated that attribute in favour of the `EventName`
+  /// field, which is [name].
   ///
   /// Built once on first read, since an immutable record has one answer.
   late final Map<String, Object?> attributes = <String, Object?>{
@@ -139,6 +151,22 @@ final class LogEvent {
 
   /// Second `|`-separated segment of [body]: the operation.
   String get operation => _segment(1);
+
+  /// [body] without its message: `Area | operation`, or the area alone when
+  /// there is no second segment.
+  ///
+  /// What a breadcrumb or a category wants. The message segment is the one part
+  /// a call site writes freely, so it is where a user-authored label or an
+  /// interpolated value ends up; this is the part that does not vary.
+  String get site => operation.isEmpty ? area : '$area | $operation';
+
+  /// The OpenTelemetry severity number to store or export.
+  ///
+  /// [LogLevel.severityNumber] for every level but `trace`, which spends the
+  /// four numbers of its range on [verbosity]: the spec asks a source with
+  /// several severities inside one range to number them by importance, so tier
+  /// 1 (the loudest, and an untiered line) is 4 and tiers 4 to 6 are 1.
+  int get severityNumber => level == .trace ? (5 - verbosity).clamp(1, 4) : level.severityNumber;
 
   /// A copy with the given fields replaced.
   ///

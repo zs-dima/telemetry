@@ -1,5 +1,7 @@
 import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
 
+import 'package:telemetry/src/console/ansi.dart';
 import 'package:telemetry/src/console/delegate.dart';
 import 'package:telemetry/src/level.dart';
 
@@ -23,6 +25,9 @@ extension type const _Console._(JSObject _) implements JSObject {
 ///
 /// The level picks the method, which is what makes the browser's own severity
 /// filter and its collapsible stack traces work on these lines.
+///
+/// ANSI means nothing here, so a styled line is translated into the console's
+/// own `%c` styling, which is how a browser colours output.
 /// {@endtemplate}
 final class JsConsoleDelegate implements ConsoleDelegate {
   /// {@macro js_console_delegate}
@@ -30,20 +35,38 @@ final class JsConsoleDelegate implements ConsoleDelegate {
 
   @override
   void write(LogLevel level, String line) {
+    final method = switch (level) {
+      .trace || .debug => 'debug',
+      .info => 'info',
+      .warn => 'warn',
+      .error || .fatal => 'error',
+    };
+    final styled = browserStyled(line);
+    if (styled == null) {
+      _plain(method, line);
+      return;
+    }
+    // One argument per `%c` marker, which is more than a typed binding can
+    // declare, so the call is made by name.
+    _console.callMethodVarArgs(method.toJS, <JSAny?>[
+      styled.format.toJS,
+      for (final style in styled.styles) style.toJS,
+    ]);
+  }
+
+  void _plain(String method, String line) {
     final arg = line.toJS;
-    switch (level) {
-      case .trace:
-      case .debug:
+    switch (method) {
+      case 'debug':
         _console.debug(arg);
 
-      case .info:
+      case 'info':
         _console.info(arg);
 
-      case .warn:
+      case 'warn':
         _console.warn(arg);
 
-      case .error:
-      case .fatal:
+      case _:
         _console.error(arg);
     }
   }
@@ -51,7 +74,3 @@ final class JsConsoleDelegate implements ConsoleDelegate {
 
 /// The browser-console delegate.
 ConsoleDelegate createConsoleDelegate() => const JsConsoleDelegate();
-
-/// Never: a browser console prints an ANSI escape as garbage, and it colours by
-/// severity itself.
-bool supportsAnsi() => false;

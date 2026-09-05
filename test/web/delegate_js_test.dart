@@ -7,6 +7,7 @@ library;
 //
 //   make test-web    # dart test -p chrome test/web
 
+import 'package:telemetry/src/console/ansi.dart';
 import 'package:telemetry/src/console/delegate_js.dart' as js_delegate;
 import 'package:telemetry/telemetry.dart';
 import 'package:test/test.dart';
@@ -15,12 +16,6 @@ void main() {
   group('the browser console delegate', () {
     test('is what the pipeline picks on the web', () {
       expect(js_delegate.createConsoleDelegate(), isA<js_delegate.JsConsoleDelegate>());
-    });
-
-    test('never claims ANSI support', () {
-      // A browser console prints escapes as text and colours by severity
-      // itself, from the method the level picked.
-      expect(js_delegate.supportsAnsi(), isFalse);
     });
 
     test('writes at every level without throwing', () {
@@ -45,7 +40,28 @@ void main() {
       expect(() => telemetry.i('Web | developer | routed'), returnsNormally);
     });
 
-    test('the pipeline renders through it with no escapes', () {
+    test('a styled line goes through the varargs call', () {
+      // The `%c` path calls the console method by name, which no typed binding
+      // covers, so only a real browser proves it works.
+      const delegate = js_delegate.JsConsoleDelegate();
+      for (final level in LogLevel.values) {
+        final line = ConsoleSink.render(
+          LogEvent(
+            level: level,
+            body: 'Web | console | ${level.name}',
+            meta: const <String, Object?>{'rpc.path': '/auth.v1/SignIn'},
+            timestamp: DateTime.utc(2026, 9, 5),
+            runId: 'run-web',
+          ),
+          const TelemetryOptions(showTime: false),
+        );
+
+        expect(line, contains(kEsc), reason: 'the renderer still writes ANSI; the delegate translates it');
+        expect(() => delegate.write(level, line), returnsNormally);
+      }
+    });
+
+    test('the pipeline renders through it', () {
       final telemetry = Telemetry(runId: 'run-web')
         ..addSink(ConsoleSink(options: const TelemetryOptions(showTime: false)));
 

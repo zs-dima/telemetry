@@ -27,7 +27,11 @@ void main() {
     // What identifies this launch. It travels on every event as
     // `LogEvent.resource` and reaches a sink through `event.attributes`, but a
     // console line shows only what varied.
-    ..resource = <String, Object?>{'app.version': '1.0.0', 'app.environment': 'example'}
+    ..resource = <String, Object?>{
+      'service.name': 'example',
+      'service.version': '1.0.0',
+      'deployment.environment.name': 'development',
+    }
     // One line.
     ..i('App | start | ready');
 

@@ -50,9 +50,12 @@ final class LogBuffer {
 
   /// The buffered events, oldest first, the two rings merged by
   /// [LogEvent.sequence] so a reader sees the order they happened in.
-  Iterable<LogEvent> get events {
-    if (_traces.isEmpty) return _events;
-    if (_events.isEmpty) return _traces;
+  ///
+  /// A snapshot: a journal draining this list logs while it drains, and an
+  /// iteration over the live rings would fail halfway.
+  List<LogEvent> get events {
+    if (_traces.isEmpty) return List<LogEvent>.of(_events);
+    if (_events.isEmpty) return List<LogEvent>.of(_traces);
     return _merged();
   }
 

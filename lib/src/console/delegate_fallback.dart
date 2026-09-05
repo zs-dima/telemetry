@@ -6,7 +6,3 @@ library;
 
 export 'package:telemetry/src/console/delegate_print.dart'
     show PrintConsoleDelegate, createConsoleDelegate, wrapForPrint;
-
-/// No, on a platform this package has never met: an escape written where it
-/// cannot be rendered stays there forever.
-bool supportsAnsi() => false;

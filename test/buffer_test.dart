@@ -71,6 +71,23 @@ void main() {
       expect(buffer.events.where((event) => event.level == .trace), hasLength(2), reason: 'the noise evicts itself');
     });
 
+    test('events is a snapshot, so a sink may log while a journal drains it', () {
+      // A journal drains this list and logs its own lines as it goes; iterating
+      // the live rings would fail halfway through the drain.
+      final buffer = LogBuffer()
+        ..add(_event('Boot | step | one', sequence: 1))
+        ..add(_event('Boot | step | two', sequence: 2));
+      final drained = buffer.events;
+
+      buffer.add(_event('Boot | step | three', sequence: 3));
+
+      expect(drained, hasLength(2), reason: 'the snapshot is what it was when it was taken');
+      expect(buffer.length, equals(3), reason: 'while the buffer moved on');
+      for (final event in drained) {
+        expect(event.body, isNotEmpty, reason: 'and it iterates whatever the buffer does next');
+      }
+    });
+
     test('the two rings come out in the order they happened', () {
       final buffer = LogBuffer(limit: 4, traceLimit: 4);
       Telemetry(runId: 'run-o', buffer: buffer)

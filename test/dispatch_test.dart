@@ -96,6 +96,22 @@ void main() {
       expect(pipeline.buffer.length, equals(3));
     });
 
+    test('sinks lists what is registered, in order, and cannot be edited', () {
+      // Both apps kept their own bookkeeping to answer "is my sink still the
+      // live one"; this is the answer.
+      final console = FakeSink();
+      final journal = FakeSink();
+      final pipeline = Telemetry(runId: 'run-3s')
+        ..addSink(console)
+        ..addSink(journal);
+
+      expect(pipeline.sinks, equals(<TelemetrySink>[console, journal]));
+
+      pipeline.removeSink(console);
+      expect(pipeline.sinks, equals(<TelemetrySink>[journal]));
+      expect(() => pipeline.sinks.add(console), throwsUnsupportedError);
+    });
+
     test('removeSink tells two equal sinks apart', () {
       // Two sinks that compare equal are still two places an event has to
       // reach.

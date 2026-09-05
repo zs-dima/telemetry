@@ -41,7 +41,8 @@ R runTelemetryScope<R>(Map<String, Object?> attributes, R Function() body) {
 /// Runs [body] with [options] in force and, when [onPrint] is given, every
 /// `print` inside it turned into an event.
 ///
-/// Two mechanics, both carried over from `package:l` (WTFPL, Plague Fox):
+/// Two mechanics, both carried over from `package:l`
+/// (MIT, Copyright (c) 2023 Matiunin Mikhail):
 ///
 /// * the print handler re-enters the zone `print` was called in (`zone.run`)
 ///   before emitting, so the event carries the options and the ambient scope it

@@ -24,21 +24,26 @@ enum LogLevel implements Comparable<LogLevel> {
   /// Something recovered, degraded, or is suspicious, but is not an incident.
   warn(13, 900),
 
-  /// An operation failed. Auto-reported to the crash reporter.
+  /// An operation failed. Captured as an incident from a `ReportingSink`'s
+  /// capture floor up, which is this level by default.
   error(17, 1000),
 
-  /// The app cannot continue in a meaningful state. Auto-reported.
+  /// The app cannot continue in a meaningful state. Captured on the same terms.
   fatal(21, 1200);
 
   const LogLevel(this.severityNumber, this.developerLevel);
 
-  /// OpenTelemetry severity number (lower bound of the level's range).
+  /// OpenTelemetry severity number, the lower bound of the level's range.
+  ///
+  /// `LogEvent.severityNumber` is what an exporter should store: it spends the
+  /// four numbers of the `trace` range on the verbosity tiers.
   final int severityNumber;
 
   /// `package:logging` / `dart:developer` level. Write-only; see [fromValue].
   final int developerLevel;
 
-  /// Single-character prefix used by the console renderer.
+  /// Single-character name of the level: the fallback text of a `LevelTag`, and
+  /// what a stored row is usually rendered with.
   String get prefix => switch (this) {
     trace => 'T',
     debug => 'D',
@@ -63,16 +68,22 @@ enum LogLevel implements Comparable<LogLevel> {
   @override
   int compareTo(LogLevel other) => severityNumber.compareTo(other.severityNumber);
 
-  /// Restores a level from [value]: its [name] or its [severityNumber].
+  /// Restores a level from [value]: its [name] or any OpenTelemetry severity
+  /// number.
   ///
-  /// [developerLevel] is not matched: `300`, `500` and `1000` are valid on both
-  /// scales and denote different levels, so accepting both would resolve stored
-  /// rows to the wrong severity. Migrate such rows at the storage layer. An
-  /// unrecognised value falls back to [info] rather than throwing.
+  /// The whole 1 to 24 range, four numbers per level, so a row written from
+  /// `LogEvent.severityNumber` or by another exporter comes back as the level it
+  /// was. [developerLevel] is not matched: `300`, `500` and `1000` are valid on
+  /// both scales and denote different levels, so accepting both would resolve
+  /// stored rows to the wrong severity. Migrate such rows at the storage layer.
+  /// An unrecognised value falls back to [info] rather than throwing.
   static LogLevel fromValue(Object? value) => switch (value) {
     final LogLevel level => level,
     final String name => values.firstWhere((level) => level.name == name, orElse: () => info),
-    final int number => values.firstWhere((level) => level.severityNumber == number, orElse: () => info),
+    final int number when number >= 1 && number <= 24 => values.lastWhere(
+      (level) => number >= level.severityNumber,
+      orElse: () => info,
+    ),
     _ => info,
   };
 }
