@@ -9,6 +9,7 @@ import 'dart:async';
 
 import 'package:meta/meta.dart';
 import 'package:telemetry/src/attributes.dart';
+import 'package:telemetry/src/body.dart';
 import 'package:telemetry/src/event.dart';
 import 'package:telemetry/src/level.dart';
 import 'package:telemetry/src/sink.dart';
@@ -364,13 +365,13 @@ final class LogDraft {
       }
     } finally {
       channels.clear();
+      // Re-armed: a draft held across an `await` can name another channel after
+      // this ran, and without this the closure would sit here unfired. A second
+      // pass is idempotent, since the event and the level are already decided.
+      _scheduled = false;
     }
   }
 
   /// Whether [body] carries at least `Area | operation`.
-  static bool _isCanonicalBody(Object body) {
-    if (body is! String) return true;
-    final parts = body.split('|');
-    return parts.length >= 2 && parts.first.trim().isNotEmpty && parts[1].trim().isNotEmpty;
-  }
+  static bool _isCanonicalBody(Object body) => body is! String || isCanonicalBody(body);
 }

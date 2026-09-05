@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:meta/meta.dart';
 import 'package:telemetry/src/console/delegate.dart';
 import 'package:telemetry/src/level.dart';
 
@@ -43,6 +44,7 @@ final class PrintConsoleDelegate implements ConsoleDelegate {
 ///
 /// A function rather than a private step: `Zone.root.print` cannot be
 /// intercepted, which is the reason for using it, so this is the test seam.
+@visibleForTesting
 List<String> wrapForPrint(String line) {
   final pieces = <String>[];
   for (final part in line.split('\n')) {

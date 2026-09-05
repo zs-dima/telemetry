@@ -82,6 +82,7 @@ once and only if the event is built.
 event.meta        // what varied: the scope, then the call site
 event.resource    // what identifies the launch
 event.attributes  // the flat projection a sink stores: resource, meta, event.name, exception.*
+                  // unmodifiable; an exporter reads name, meta and resource instead
 ```
 
 ## A stable identity
@@ -102,8 +103,9 @@ verbosity tiers, and `LogLevel.fromValue` reads all 24 back.
 
 ## Trace correlation
 
-`LogEvent` carries `traceId` and `spanId`, read at the moment the call site acted. Nothing here
-starts or ends a span; whatever owns tracing supplies them:
+`LogEvent` carries `traceId` and `spanId`, read at the moment the call site acted. There is no
+sampled bit, so an exporter writes `TraceFlags` as zero. Nothing here starts or ends a span;
+whatever owns tracing supplies them:
 
 ```dart
 log.traceContext = () {
@@ -147,7 +149,17 @@ The package ships the console sink, the ring buffer and `ReportingSink`, which h
 crash-reporting policy: a breadcrumb floor, throttled capture above a capture floor, and an
 escalation below it as a structured log, with three hooks where the vendor goes. The two floors are
 independent, and a call site says `..escalate()` without knowing either. The sink decides, and its
-`ReportThrottle` makes a second send for an already-captured failure free.
+`ReportThrottle` makes a second send for an already-captured failure free. Only capture is
+throttled: a structured log is a stream, and the reporter rate-limits it.
+
+A reporter is two registrations, since it is both a sink and the escalation destination:
+
+```dart
+final reporter = MyReportingSink();
+log
+  ..addSink(reporter)
+  ..escalationSink = reporter;
+```
 
 Everything else is an interface: `TelemetrySink`, `ToastSink`, `NotifySink`, `TrackSink`,
 `EscalationSink`, `Flushable`. A journal is a database you chose, a reporter is an account you own,
@@ -298,7 +310,7 @@ dependencies:
   telemetry:
     git:
       url: https://github.com/zs-dima/telemetry.git
-      ref: v0.3.3
+      ref: v0.3.5
 ```
 
 ## Credit

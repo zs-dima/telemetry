@@ -25,7 +25,7 @@ enum LogOutput {
 }
 
 /// {@template telemetry_options}
-/// Console behaviour for the current zone.
+/// Console behaviour, and `print` capture, for the current zone.
 ///
 /// Zone-scoped rather than global, so a test or a nested `runTelemetry` can
 /// tighten or silence output without touching the sinks.

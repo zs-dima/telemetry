@@ -25,6 +25,8 @@ final class Telemetry {
   /// How deep [emit] may re-enter itself before events are dropped.
   ///
   /// A sink that logs from `handle` produces an event that reaches it again.
+  /// Synchronous re-entry only: a channel action or an [events] listener that
+  /// logs comes back a microtask later, at depth zero, and nothing bounds that.
   static const int _maxDepth = 3;
 
   /// {@macro telemetry}
@@ -106,6 +108,9 @@ final class Telemetry {
   /// An observer rather than a consumer: subscribing does not enable a level, so
   /// a debug overlay cannot switch on every `trace` tier the sinks drop. Late
   /// subscribers see only new events; read [buffer] for what came before.
+  ///
+  /// A listener that logs is an unbounded loop: delivery is asynchronous, so
+  /// each generation starts at depth zero and [emit]'s cap never sees it.
   Stream<LogEvent> get events => _events.stream;
 
   /// What identifies this launch, carried by every event as [LogEvent.resource].
@@ -135,7 +140,7 @@ final class Telemetry {
   /// Registers a destination for logged events.
   ///
   /// A sink registered while an event is being dispatched receives the next one,
-  /// not that one.
+  /// not that one; one removed during a dispatch still receives that one.
   void addSink(TelemetrySink sink) => _sinks = List<TelemetrySink>.unmodifiable(<TelemetrySink>[..._sinks, sink]);
 
   /// Removes a registered sink and forgets that it failed.
@@ -163,7 +168,12 @@ final class Telemetry {
   bool isEnabled(LogLevel level, {int verbosity = 0}) {
     if (buffer.guarantees(level, verbosity)) return true;
     for (final sink in _sinks) {
-      if (sink.enabled(level, verbosity)) return true;
+      try {
+        if (sink.enabled(level, verbosity)) return true;
+      } on Object {
+        // A sink that cannot answer does not want the event, and must not take
+        // the question to the call site. `emit` reports the same failure once.
+      }
     }
     return false;
   }
@@ -241,7 +251,9 @@ final class Telemetry {
     if (_depth >= _maxDepth) {
       if (!_depthReported) {
         _depthReported = true;
-        Zone.root.print('Telemetry | dispatch | re-entered $_maxDepth deep, dropping | $event');
+        Zone.root.print(
+          'Telemetry | dispatch | re-entered $_maxDepth deep, dropping (further reports silent) | $event',
+        );
       }
       return;
     }
@@ -249,8 +261,11 @@ final class Telemetry {
     try {
       buffer.add(event);
       for (final sink in _sinks) {
-        if (!sink.enabled(event.level, event.verbosity)) continue;
         try {
+          // Inside the guard: a sink whose `enabled` throws would otherwise take
+          // the error to the call site of `log.i(...)` and skip the sinks after
+          // it.
+          if (!sink.enabled(event.level, event.verbosity)) continue;
           sink.handle(event);
         } on Object catch (error, stackTrace) {
           // A failing sink must not take the others down or recurse through the

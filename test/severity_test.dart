@@ -72,7 +72,13 @@ void main() {
     });
 
     test('falls back to the area when there is no operation', () {
-      expect(_event(.info, body: 'plain message').site, equals('plain message'));
+      expect(_event(.info, body: 'Pairing | handshake').site, equals('Pairing | handshake'));
+    });
+
+    test('is empty when the body carries no separator at all', () {
+      // A bridged line or a captured `print`: there is no subsystem in it, and
+      // a breadcrumb category made of the whole message is one category each.
+      expect(_event(.info, body: 'plain message').site, isEmpty);
     });
   });
 }

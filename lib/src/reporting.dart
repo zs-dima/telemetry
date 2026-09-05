@@ -86,12 +86,18 @@ abstract base class ReportingSink implements TelemetrySink, EscalationSink {
   /// when the call site named the event, which is what [ReportThrottle.identityOf]
   /// dedupes on, so the reporter groups what the throttle counted as one
   /// failure. An unnamed event is better left to the reporter's own grouping.
+  ///
+  /// The identity is spent before this runs, so a vendor call that throws costs
+  /// one dedupe window.
   @protected
   void capture(LogEvent event, LogLevel level, StackTrace? stackTrace);
 
   /// Sends [event] as a structured log at [level], always below [captureLevel].
   /// An implementation must handle every level below that floor, including
   /// `error` when the floor is higher than the default.
+  ///
+  /// Not throttled: a log is a stream, and the reporter rate-limits it. Only
+  /// [capture] spends [throttle], because an incident is a unit of triage.
   @protected
   void report(LogEvent event, LogLevel level);
 }

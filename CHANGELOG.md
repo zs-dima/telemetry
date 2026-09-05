@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-09-05
+
+An architectural review of the whole package: module boundaries, the public surface, the OTel
+mapping, and a hunt for failures under re-entrancy, zones and the asynchronous fan-out. The shape
+held; these are the defects it found.
+
+### Changed
+
+- **`LogEvent.area` and `site` are empty for a body with no `|`.** They used to answer with the
+  whole line, so a bridged record or a captured `print` became its own crash-reporter category,
+  one per message. A body without a separator carries no subsystem to name.
+- **`ReportThrottle` takes its clock in the constructor**, `ReportThrottle({Duration Function()?
+  clock})`, instead of a `now:` argument per call. Mixing the two scales was an `assert`, and in
+  release it produced negative durations that suppressed every report for the life of the process.
+- **`LogEvent.attributes` is unmodifiable.** It is the map sinks store, on an immutable record, and
+  one sink could rewrite what the next one wrote.
+- **A local `LogEvent.timestamp` is normalised to UTC** rather than asserted. The assert said
+  nothing in release, and a bridge composing its own record is the one caller that can pass local
+  time.
+- **`LogBuffer(limit: 0)` keeps nothing**, the way `traceLimit: 0` already did. It used to reach
+  `removeFirst` on an empty ring and throw out of every log call in release.
+
+### Fixed
+
+- A sink whose `enabled` throws no longer takes the failure to the call site of `log.i(...)` and no
+  longer skips the sinks after it. `Telemetry.isEnabled` treats a sink that cannot answer as one
+  that does not want the event.
+- A channel action named after the fan-out microtask ran, on a draft held across an `await`, was
+  recorded and never fired. The fan-out re-arms, and the second pass reuses the event.
+- The two rings of `LogBuffer` merge by sequence and then by timestamp, so hand-built records left
+  at the default sequence no longer sort ahead of everything.
+- The console sink looks its delegate up rather than calling `putIfAbsent`, which allocated a
+  closure per line for a map that holds one entry.
+- `wrapForPrint` is `@visibleForTesting`: it was public only because the tests needed it.
+
+### Docs
+
+- The re-entrancy cap covers synchronous re-entry only: an `events` listener or a channel action
+  that logs comes back a microtask later, at depth zero, and nothing bounds that.
+- The buffer hand-over is synchronous: read `events`, `markDrained`, register the sink, then write.
+- `ReportingSink.report` is not throttled; `capture` spends the identity before the vendor call,
+  so a call that throws costs one dedupe window.
+- A sink removed during a dispatch still receives that event.
+- An exporter reads `name`, `meta` and `resource` rather than `attributes`, and writes
+  `TraceFlags` as zero. README gains the two-registration snippet for a reporter.
+
 ## [0.3.3] - 2026-09-05
 
 ### Changed

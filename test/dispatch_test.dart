@@ -56,6 +56,19 @@ void main() {
       expect(healthy.events, hasLength(1));
     });
 
+    test('a sink whose gate throws is contained like one whose handle throws', () {
+      // `enabled` is asked inside the same guard as `handle`: a broken gate must
+      // not take the failure to the line that called `log.i`.
+      final healthy = FakeSink();
+      final pipeline = Telemetry(runId: 'run-3g')
+        ..addSink(FakeSink(throwsFromEnabled: true))
+        ..addSink(healthy);
+
+      expect(() => pipeline.i('Boot | start | ok'), returnsNormally);
+      expect(healthy.events, hasLength(1), reason: 'the sinks after it still got the event');
+      expect(pipeline.isEnabled(.info), isTrue, reason: 'a sink that cannot answer does not want it');
+    });
+
     test('a sink registered while an event is dispatched does not break the run', () {
       final late = FakeSink();
       final pipeline = Telemetry(runId: 'run-3b');

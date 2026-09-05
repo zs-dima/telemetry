@@ -2,7 +2,7 @@
 name: telemetry
 description: One event model for every telemetry channel (console, journal, crash reporting, toasts, analytics), with sinks the application supplies.
 
-version: 0.3.3
+version: 0.3.5
 
 homepage: https://github.com/zs-dima/telemetry
 repository: https://github.com/zs-dima/telemetry

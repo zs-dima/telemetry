@@ -14,28 +14,21 @@ import 'package:telemetry/src/event.dart';
 /// {@endtemplate}
 class ReportThrottle {
   /// {@macro report_throttle}
-  ReportThrottle({this.dedupeWindow = const Duration(minutes: 5), this.maxPerMinute = 6});
-
-  /// Elapsed time since this throttle was built.
   ///
-  /// A monotonic clock rather than [DateTime.now]: an NTP correction or a user
-  /// moving the clock back would otherwise suppress every report for a whole
+  /// [clock] reads elapsed time since this throttle was built. The default is a
+  /// [Stopwatch], monotonic on purpose: with [DateTime.now] an NTP correction or
+  /// a user moving the clock back would suppress every report for a whole
   /// [dedupeWindow].
   ///
-  /// It measures time the process was awake, so after a long sleep a repeat can
-  /// be suppressed for longer than [dedupeWindow] in wall time. That is the
-  /// right trade against a failure loop, which cannot run while the process
-  /// does not.
-  final Stopwatch _elapsed = Stopwatch()..start();
+  /// A stopwatch measures time the process was awake, so after a long sleep a
+  /// repeat can be suppressed for longer than [dedupeWindow] in wall time. That
+  /// is the right trade against a failure loop, which cannot run while the
+  /// process does not.
+  ReportThrottle({this.dedupeWindow = const Duration(minutes: 5), this.maxPerMinute = 6, Duration Function()? clock})
+    : _clock = clock ?? _stopwatch();
 
-  /// The first wall-clock instant a caller supplied, if any. A test passes
-  /// absolute times, measured against this origin so one scale is used.
-  DateTime? _origin;
-
-  /// Whether the first call supplied a [DateTime]. The stopwatch and an injected
-  /// origin cannot be mixed on one instance: mixing them produced negative
-  /// durations that silently suppressed everything.
-  bool? _injected;
+  /// A monotonic reading, one scale for the life of the instance.
+  final Duration Function() _clock;
 
   final Map<String, Duration> _recent = <String, Duration>{};
 
@@ -49,10 +42,9 @@ class ReportThrottle {
 
   /// Whether [event] should be reported now.
   ///
-  /// Calling this records the decision, so ask once per event. [now] is a test
-  /// seam: supply it for every call or for none.
-  bool allow(LogEvent event, {DateTime? now}) {
-    final at = _at(now);
+  /// Calling this records the decision, so ask once per event.
+  bool allow(LogEvent event) {
+    final at = _clock();
     final key = identityOf(event);
 
     final last = _recent[key];
@@ -86,14 +78,9 @@ class ReportThrottle {
   // ignore: avoid-substring
   static String _prefix(String body) => body.length <= 80 ? body : body.substring(0, 80);
 
-  Duration _at(DateTime? now) {
-    assert(
-      _injected == null || _injected == (now != null),
-      'ReportThrottle measures on one scale: supply `now` for every call, or for none. '
-      'Mixing them compares a stopwatch reading with an offset from the first instant supplied.',
-    );
-    _injected = now != null;
-    if (now == null) return _elapsed.elapsed;
-    return now.difference(_origin ??= now);
+  /// The default clock: elapsed time since the throttle was built.
+  static Duration Function() _stopwatch() {
+    final elapsed = Stopwatch()..start();
+    return () => elapsed.elapsed;
   }
 }

@@ -1,4 +1,7 @@
+import 'dart:collection';
+
 import 'package:meta/meta.dart';
+import 'package:telemetry/src/body.dart';
 import 'package:telemetry/src/level.dart';
 
 /// {@template log_event}
@@ -20,7 +23,7 @@ final class LogEvent {
   LogEvent({
     required this.level,
     required this.body,
-    required this.timestamp,
+    required DateTime timestamp,
     required this.runId,
     Map<String, Object?> meta = const <String, Object?>{},
     this.resource = const <String, Object?>{},
@@ -33,7 +36,10 @@ final class LogEvent {
     this.traceId,
     this.spanId,
   }) : meta = meta.isEmpty ? const <String, Object?>{} : Map<String, Object?>.unmodifiable(meta),
-       assert(timestamp.isUtc, 'LogEvent.timestamp must be UTC; local time is a rendering choice');
+       // Normalised rather than asserted: a bridge composing its own record is
+       // the one caller that can pass local time, and in release an assert says
+       // nothing. `toUtc` returns the same instance when it is UTC already.
+       timestamp = timestamp.toUtc();
 
   /// Severity.
   final LogLevel level;
@@ -135,8 +141,13 @@ final class LogEvent {
   /// OpenTelemetry deprecated that attribute in favour of the `EventName`
   /// field, which is [name].
   ///
-  /// Built once on first read, since an immutable record has one answer.
-  late final Map<String, Object?> attributes = <String, Object?>{
+  /// Built once on first read, and unmodifiable: an immutable record has one
+  /// answer, and one sink must not rewrite what the next one stores.
+  ///
+  /// An exporter reads [name], [meta] and [resource] instead: this map holds
+  /// `event.name`, which OpenTelemetry deprecated as an attribute in favour of
+  /// the field.
+  late final Map<String, Object?> attributes = UnmodifiableMapView<String, Object?>(<String, Object?>{
     ...resource,
     ...meta,
     if (name case final String value) 'event.name': value,
@@ -144,21 +155,23 @@ final class LogEvent {
       'exception.type': e.runtimeType.toString(),
       'exception.message': e.toString(),
     },
-  };
+  });
 
-  /// First `|`-separated segment of [body]: the subsystem.
-  String get area => _segment(0);
+  /// First `|`-separated segment of [body]: the subsystem. Empty for a body
+  /// that carries no separator, such as a bridged line or a captured `print`.
+  String get area => bodyArea(body);
 
-  /// Second `|`-separated segment of [body]: the operation.
-  String get operation => _segment(1);
+  /// Second `|`-separated segment of [body]: the operation. Empty when there is
+  /// none.
+  String get operation => bodyOperation(body);
 
-  /// [body] without its message: `Area | operation`, or the area alone when
-  /// there is no second segment.
+  /// [body] without its message: `Area | operation`, the area alone when there
+  /// is no second segment, empty when there is no separator.
   ///
   /// What a breadcrumb or a category wants. The message segment is the one part
   /// a call site writes freely, so it is where a user-authored label or an
   /// interpolated value ends up; this is the part that does not vary.
-  String get site => operation.isEmpty ? area : '$area | $operation';
+  String get site => bodySite(body);
 
   /// The OpenTelemetry severity number to store or export.
   ///
@@ -207,10 +220,4 @@ final class LogEvent {
 
   @override
   String toString() => '[${level.prefix}] $body';
-
-  /// The [index]-th `|`-separated part of [body], trimmed; empty when absent.
-  String _segment(int index) {
-    final parts = body.split('|');
-    return index < parts.length ? parts[index].trim() : '';
-  }
 }

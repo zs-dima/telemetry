@@ -208,6 +208,29 @@ void main() {
       expect(sink.events, hasLength(2));
     });
 
+    test('a channel named after the fan-out still fires, once', () async {
+      // A draft held across an `await` and then given another channel: the
+      // fan-out re-arms, and the second pass reuses the event it already built.
+      final (late, journal) = pipeline();
+      final messenger = FakeToast();
+      final inbox = FakeNotify();
+      late
+        ..toastSink = messenger
+        ..notifySink = inbox;
+
+      final draft = late('Sync | upload | refused').description('Try again')
+        ..warn()
+        ..toast();
+      await pumpEventQueue();
+
+      draft.notify('inbox.sync');
+      await pumpEventQueue();
+
+      expect(messenger.requests, hasLength(1));
+      expect(inbox.notified.single.kind, equals('inbox.sync'));
+      expect(journal.events, hasLength(1), reason: 'one event, whatever the channels do afterwards');
+    });
+
     test('a payload is copied at the call, not read at the fan-out', () async {
       final track = FakeTrack();
       telemetry.trackSink = track;

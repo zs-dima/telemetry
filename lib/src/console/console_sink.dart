@@ -1,3 +1,4 @@
+import 'package:telemetry/src/body.dart';
 import 'package:telemetry/src/console/ansi.dart';
 import 'package:telemetry/src/console/delegate.dart';
 import 'package:telemetry/src/console/delegate_developer.dart'
@@ -103,7 +104,7 @@ final class ConsoleSink implements TelemetrySink {
     }
     // A bridged line or a captured `print` can carry a newline, and one event
     // has to stay one line. The area word is dropped when a glyph says it.
-    _writeBare(buffer, glyph != null && !glyph.keepsArea ? _withoutArea(event.body) : event.body);
+    _writeBare(buffer, glyph != null && !glyph.keepsArea ? bodyWithoutArea(event.body) : event.body);
 
     // Attributes stay on the line as `key=value`, so one grep finds the line and
     // its values. `event.name` leads, being the identity the rest describes.
@@ -132,26 +133,20 @@ final class ConsoleSink implements TelemetrySink {
     return buffer.toString();
   }
 
-  ConsoleDelegate _delegateFor(TelemetryOptions options) =>
-      delegate ??
-      _delegates.putIfAbsent(
-        (options.output, options.developerName),
-        () => switch (options.output) {
-          .platform => platform_delegate.createConsoleDelegate(),
-          .print => print_delegate.createConsoleDelegate(),
-          .developer => developer_delegate.createConsoleDelegate(name: options.developerName),
-          .ignore => ignore_delegate.createConsoleDelegate(),
-        },
-      );
-
-  /// [body] from after its first `|`, trimmed: `Control | lifecycle | disposed`
-  /// becomes `lifecycle | disposed`. A body with no `|`, such as a bridged line,
-  /// is returned whole.
-  static String _withoutArea(String body) {
-    final bar = body.indexOf('|');
-    if (bar < 0) return body;
-    // ignore: avoid-substring
-    return body.substring(bar + 1).trimLeft();
+  ConsoleDelegate _delegateFor(TelemetryOptions options) {
+    final fixed = delegate;
+    if (fixed != null) return fixed;
+    final key = (options.output, options.developerName);
+    // Looked up rather than `putIfAbsent`, which allocates its closure on every
+    // line for a map that holds one entry after the first.
+    final cached = _delegates[key];
+    if (cached != null) return cached;
+    return _delegates[key] = switch (options.output) {
+      .platform => platform_delegate.createConsoleDelegate(),
+      .print => print_delegate.createConsoleDelegate(),
+      .developer => developer_delegate.createConsoleDelegate(name: options.developerName),
+      .ignore => ignore_delegate.createConsoleDelegate(),
+    };
   }
 
   /// Local time, since a console line is read against the developer's own

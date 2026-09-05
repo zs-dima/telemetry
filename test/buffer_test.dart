@@ -71,6 +71,38 @@ void main() {
       expect(buffer.events.where((event) => event.level == .trace), hasLength(2), reason: 'the noise evicts itself');
     });
 
+    test('limit: 0 keeps nothing and throws nothing', () {
+      // The mirror of `traceLimit: 0`. It used to reach `removeFirst` on an
+      // empty ring, which threw out of every log call in release.
+      final buffer = LogBuffer(limit: 0);
+
+      expect(buffer.guarantees(.error), isFalse);
+      expect(() => buffer.add(_event('Boot | step | failed', level: .error)), returnsNormally);
+      expect(buffer.events, isEmpty);
+      expect(buffer.guarantees(.trace), isTrue, reason: 'the trace ring has its own limit');
+    });
+
+    test('two rings tie on sequence and the timestamp settles it', () {
+      // A bridge that forgets `nextSequence()` leaves the default zero on every
+      // record; without the tie-break those sorted ahead of everything.
+      final early = DateTime.utc(2026, 9, 5, 10);
+      final buffer = LogBuffer()
+        ..add(
+          LogEvent(
+            level: .info,
+            body: 'Bridge | forwarded | second',
+            timestamp: early.add(const Duration(minutes: 1)),
+            runId: 'run',
+          ),
+        )
+        ..add(LogEvent(level: .trace, body: 'Control | frame | painted', verbosity: 1, timestamp: early, runId: 'run'));
+
+      expect(
+        buffer.events.map((event) => event.body),
+        equals(<String>['Control | frame | painted', 'Bridge | forwarded | second']),
+      );
+    });
+
     test('events is a snapshot, so a sink may log while a journal drains it', () {
       // A journal drains this list and logs its own lines as it goes; iterating
       // the live rings would fail halfway through the drain.

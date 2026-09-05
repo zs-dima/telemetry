@@ -20,12 +20,13 @@ import 'package:telemetry/src/level.dart';
 final class LogBuffer {
   /// {@macro log_buffer}
   LogBuffer({this.limit = 300, this.minLevel = LogLevel.debug, this.traceLimit = 100, this.maxVerbosity = 6})
-    : assert(limit > 0, 'limit must be positive'),
+    : assert(limit >= 0, 'limit cannot be negative'),
       assert(traceLimit >= 0, 'traceLimit cannot be negative');
 
   final Queue<LogEvent> _traces = Queue<LogEvent>();
 
-  /// How many events from [minLevel] up are kept before the drain.
+  /// How many events from [minLevel] up are kept before the drain. Zero keeps
+  /// none, as [traceLimit] does for the trace ring.
   final int limit;
 
   /// The lowest level the first ring keeps; `debug` by default, to match a
@@ -69,16 +70,21 @@ final class LogBuffer {
   ///
   /// `trace` up to [maxVerbosity] while [traceLimit] leaves room for it, since
   /// nothing else stores it, plus everything from [minLevel] up until
-  /// [markDrained].
+  /// [markDrained]. A zero [limit] refuses the first ring the way a zero
+  /// [traceLimit] refuses the second.
   bool guarantees(LogLevel level, [int verbosity = 0]) {
     if (level == .trace) return traceLimit > 0 && verbosity <= maxVerbosity;
-    return !_drained && level >= minLevel;
+    return limit > 0 && !_drained && level >= minLevel;
   }
 
   /// The journal has adopted what was buffered; the first ring stands down.
   ///
   /// Called by the code that builds the journal sink, right after draining it.
   /// The trace ring is untouched, since the journal does not store it.
+  ///
+  /// The hand-over is synchronous: read [events], call this, register the sink,
+  /// then write the snapshot. An `await` between the first two steps loses what
+  /// was logged in between, since this clears the ring.
   void markDrained() {
     _drained = true;
     _events.clear();
@@ -108,6 +114,13 @@ final class LogBuffer {
     _traces.clear();
   }
 
+  /// Whether [left] belongs before [right]: by sequence, then by timestamp.
+  ///
+  /// The timestamp settles the tie a bridge creates, since a hand-built event
+  /// that was never given `nextSequence()` carries the default zero.
+  static bool _before(LogEvent left, LogEvent right) =>
+      left.sequence == right.sequence ? !left.timestamp.isAfter(right.timestamp) : left.sequence < right.sequence;
+
   /// The two rings interleaved. Each is already in sequence order, so this is a
   /// merge rather than a sort.
   List<LogEvent> _merged() {
@@ -117,7 +130,7 @@ final class LogBuffer {
     var hasLeft = true;
     var hasRight = true;
     while (hasLeft && hasRight) {
-      if (left.current.sequence <= right.current.sequence) {
+      if (_before(left.current, right.current)) {
         merged.add(left.current);
         hasLeft = left.moveNext();
       } else {

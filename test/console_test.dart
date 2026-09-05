@@ -273,12 +273,13 @@ void main() {
       );
     });
 
-    test('a body with no area is never cut', () {
-      // A bridged line or a captured `print` has no `|` to drop.
+    test('a body with no area gets no glyph and is never cut', () {
+      // A bridged line or a captured `print` has no subsystem in it, so a scheme
+      // cannot name one and there is no segment to drop.
       const anything = AreaIcons(<String, String>{'whatever was printed': '🪢'});
       expect(
         ConsoleSink.render(lined('whatever was printed'), plain.copyWith(icon: anything)),
-        equals('[I] 🪢 whatever was printed'),
+        equals('[I] whatever was printed'),
       );
     });
 

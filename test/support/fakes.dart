@@ -8,10 +8,13 @@ import 'package:telemetry/telemetry.dart';
 
 /// Records everything it is given.
 final class FakeSink implements TelemetrySink {
-  FakeSink({this.minLevel = LogLevel.trace, this.throws = false});
+  FakeSink({this.minLevel = LogLevel.trace, this.throws = false, this.throwsFromEnabled = false});
 
   final LogLevel minLevel;
   final bool throws;
+
+  /// Whether the gate itself fails, which the pipeline must contain too.
+  final bool throwsFromEnabled;
   final List<LogEvent> events = <LogEvent>[];
 
   /// How many times the pipeline asked whether this sink wants a level.
@@ -20,6 +23,7 @@ final class FakeSink implements TelemetrySink {
   @override
   bool enabled(LogLevel level, int verbosity) {
     asked++;
+    if (throwsFromEnabled) throw StateError('the gate is broken');
     return level >= minLevel;
   }
 

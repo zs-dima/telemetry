@@ -26,13 +26,29 @@ void main() {
       expect(event?.operation, equals('handshake'));
     });
 
-    test('a body without separators still yields an area and an empty operation', () {
-      // The convention check is what normally refuses this body; the accessors
-      // still have to answer for a body that came from a bridge.
+    test('a body without separators has no area and no operation', () {
+      // The convention check is what normally refuses this body. For one that
+      // came from a bridge there is no subsystem to name, and calling the whole
+      // line an area gives a crash reporter one category per message.
       telemetry.strict = false;
       final event = telemetry('plain message').info();
-      expect(event?.area, equals('plain message'));
+      expect(event?.area, isEmpty);
       expect(event?.operation, isEmpty);
+      expect(event?.site, isEmpty);
+    });
+
+    test('the attributes a sink stores cannot be rewritten by another sink', () {
+      final event = telemetry('Rpc | call | ok').meta({'rpc.path': '/auth.v1/SignIn'}).info();
+
+      expect(() => event!.attributes['rpc.path'] = '/other', throwsUnsupportedError);
+    });
+
+    test('a local timestamp is normalised, since a stamp that leaves the device is never local', () {
+      final local = DateTime(2026, 9, 5, 14, 3, 7);
+      final event = LogEvent(level: .info, body: 'Bridge | forwarded | record', timestamp: local, runId: 'run');
+
+      expect(event.timestamp.isUtc, isTrue);
+      expect(event.timestamp, equals(local.toUtc()));
     });
 
     test('the exception becomes OpenTelemetry attributes, not part of the body', () {
