@@ -215,9 +215,14 @@ bare ones.
 
 `printColors` is honoured as written, on every destination, the way `package:l` does it. A Flutter
 app has no terminal of its own, so no probe can answer for it. Say true where what reads the output
-renders escapes: a terminal, and the browser console, which gets `%c` styling instead. Say false
-where it shows them as text: the DevTools Logging view, and `print` read in Firefox or Safari. A CLI
-that may be redirected passes `stdout.supportsAnsiEscapes`.
+renders escapes: a terminal, Chrome's console (since Chrome 99), and the VS Code debug console. Say
+false where it shows them as text: the DevTools Logging view, and a browser console read in Firefox
+or Safari. A CLI that may be redirected passes `stdout.supportsAnsiEscapes`.
+
+On the web a line is written as one string argument, the way `package:l` writes it, with the level
+choosing the console method. The debug proxy that carries a browser console call to an IDE forwards
+the first argument and drops the rest, so a `%c` format string would arrive in the debug console
+with its markers as text.
 
 `LogOutput.developer` goes to `dart:developer`'s `log()` on the VM and to the browser console on the
 web, where dart2js and dart2wasm share a patch whose body is empty. The `print` destination splits
@@ -293,7 +298,7 @@ dependencies:
   telemetry:
     git:
       url: https://github.com/zs-dima/telemetry.git
-      ref: v0.3.1
+      ref: v0.3.3
 ```
 
 ## Credit

@@ -378,49 +378,6 @@ void main() {
     });
   });
 
-  group('browser styling', () {
-    test('a line with no escapes is left for the plain call', () {
-      expect(browserStyled('[I] Rpc | call | ok'), isNull);
-    });
-
-    test('each escape becomes a marker and one CSS declaration', () {
-      final line = ConsoleSink.render(_event(level: .error), const TelemetryOptions(showTime: false));
-      final styled = browserStyled(line);
-
-      expect(styled, isNotNull);
-      expect(styled!.format, equals('%c[E]%c Rpc | call | ok'));
-      expect(styled.styles, equals(<String>['color:#e2504a;font-weight:normal', 'font-weight:normal']));
-      expect(styled.format.contains(kEsc), isFalse, reason: 'no escape survives the translation');
-    });
-
-    test('bold then red is one marker, and a reset drops both', () {
-      final styled = browserStyled(ConsoleSink.render(_event(level: .fatal), const TelemetryOptions(showTime: false)));
-
-      expect(styled!.format, equals('%c[F]%c Rpc | call | ok'));
-      expect(styled.styles, equals(<String>['color:#e2504a;font-weight:bold', 'font-weight:normal']));
-    });
-
-    test('the dimmed time and keys get their own tone', () {
-      final styled = browserStyled(
-        ConsoleSink.render(_event(meta: const <String, Object?>{'rpc.path': '/x'}), .defaults),
-      );
-
-      expect(styled!.styles.first, equals('color:#9a9a9a;font-weight:normal'));
-      expect(styled.format, contains('%crpc.path=%c/x'));
-    });
-
-    test('a percent in the text is doubled, since the console reads a format string', () {
-      final styled = browserStyled(
-        ConsoleSink.render(
-          _event(meta: const <String, Object?>{'app.battery': '80%'}),
-          const TelemetryOptions(showTime: false),
-        ),
-      );
-
-      expect(styled!.format, endsWith('80%%'));
-    });
-  });
-
   group('colour resolution', () {
     test('a supplied delegate is trusted with whatever the options ask for', () {
       final lines = <String>[];

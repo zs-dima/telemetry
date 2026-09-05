@@ -40,9 +40,10 @@ void main() {
       expect(() => telemetry.i('Web | developer | routed'), returnsNormally);
     });
 
-    test('a styled line goes through the varargs call', () {
-      // The `%c` path calls the console method by name, which no typed binding
-      // covers, so only a real browser proves it works.
+    test('a coloured line is written as it is, escapes included', () {
+      // One string argument, the way `package:l` writes it: the debug proxy
+      // that carries a console call to an IDE forwards the first argument and
+      // drops the rest.
       const delegate = js_delegate.JsConsoleDelegate();
       for (final level in LogLevel.values) {
         final line = ConsoleSink.render(
@@ -56,7 +57,7 @@ void main() {
           const TelemetryOptions(showTime: false),
         );
 
-        expect(line, contains(kEsc), reason: 'the renderer still writes ANSI; the delegate translates it');
+        expect(line, contains(kEsc), reason: 'the renderer writes ANSI, and the console renders it');
         expect(() => delegate.write(level, line), returnsNormally);
       }
     });

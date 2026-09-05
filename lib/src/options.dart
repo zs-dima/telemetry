@@ -65,11 +65,10 @@ final class TelemetryOptions {
   ///
   /// Honoured as written, on every destination, the way `package:l` does it.
   /// A Flutter app has no terminal of its own, so no probe can answer for it.
-  /// Say true where what reads the output renders escapes: a terminal, the
-  /// browser console (which gets `%c` styling instead), Chrome's own console
-  /// view of `print`. Say false where it shows them as text: the DevTools
-  /// Logging view, and `print` read in Firefox or Safari. A CLI that may be
-  /// redirected passes `stdout.supportsAnsiEscapes`.
+  /// Say true where what reads the output renders escapes: a terminal, Chrome's
+  /// console, the VS Code debug console. Say false where it shows them as text:
+  /// the DevTools Logging view, and a browser console read in Firefox or
+  /// Safari. A CLI that may be redirected passes `stdout.supportsAnsiEscapes`.
   final bool printColors;
 
   /// Whether the console sink writes in release builds.

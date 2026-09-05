@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-09-05
+
+### Changed
+
+- **The browser console gets one plain string per level**, the way `package:l` writes it, with the
+  level choosing `console.debug`, `info`, `warn` or `error`. 0.3.0 translated the ANSI escapes into
+  the console's `%c` styling, which only Chrome DevTools understands: the debug proxy that carries a
+  browser console call to an IDE forwards the first argument and drops the rest, so the VS Code
+  debug console printed lines like `%c14:39:02%c %cI%c load | ready`. An escape survives that trip
+  and is rendered by Chrome's console and by the debug console alike; Firefox and Safari show it as
+  text, which is what `printColors: false` is for. `dart:js_interop_unsafe` is no longer used, so
+  the console stops attributing every line to the interop patch.
+
 ## [0.3.1] - 2026-09-05
 
 A review round against the OpenTelemetry logs spec, the Dart and Flutter sources, and the practice
