@@ -1,0 +1,41 @@
+# ignore: prefer-publish-to-none, this package is published.
+name: telemetry
+description: One event model for every telemetry channel (console, journal, crash reporting, toasts, analytics), with sinks the application supplies.
+
+version: 0.2.1
+
+homepage: https://github.com/zs-dima/telemetry
+repository: https://github.com/zs-dima/telemetry
+issue_tracker: https://github.com/zs-dima/telemetry/issues
+
+topics:
+  - logging
+  - telemetry
+  - opentelemetry
+  - sentry
+  - observability
+
+platforms:
+  android:
+  ios:
+  linux:
+  macos:
+  web:
+  windows:
+
+environment:
+  sdk: ^3.13.2
+
+dependencies:
+  # Annotations only. The engine is pure Dart: it has to run in an isolate, in a CLI
+  # and under `dart test`, with no Flutter binding anywhere near it.
+  meta: ^1.16.0
+
+dev_dependencies:
+  # `package:test`, not `flutter_test`: the engine is pure Dart, so its tests run the way it does.
+  test: ^1.25.0
+
+  lints_tool:
+    git:
+      url: https://github.com/zs-dima/lints_tool.git
+      ref: v1.0.1
