@@ -1,5 +1,6 @@
 import 'dart:io' as io;
 
+import 'package:meta/meta.dart';
 import 'package:telemetry/src/console/delegate.dart';
 import 'package:telemetry/src/console/delegate_print.dart';
 import 'package:telemetry/src/level.dart';
@@ -28,5 +29,10 @@ final class VmConsoleDelegate implements ConsoleDelegate {
 }
 
 /// A stdout delegate when a terminal is attached, `print` otherwise.
-ConsoleDelegate createConsoleDelegate() =>
-    io.stdout.hasTerminal ? const VmConsoleDelegate() : const PrintConsoleDelegate();
+ConsoleDelegate createConsoleDelegate() => consoleDelegateFor(hasTerminal: io.stdout.hasTerminal);
+
+/// The choice [createConsoleDelegate] makes, with the probe as an argument:
+/// a suite covers both branches whatever `stdout` it was given.
+@visibleForTesting
+ConsoleDelegate consoleDelegateFor({required bool hasTerminal}) =>
+    hasTerminal ? const VmConsoleDelegate() : const PrintConsoleDelegate();

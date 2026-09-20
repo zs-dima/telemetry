@@ -339,8 +339,9 @@ void main() {
   });
 
   group('the print destination', () {
-    test('under `dart test` the platform delegate is the print one', () {
-      expect(vm_delegate.createConsoleDelegate(), isA<PrintConsoleDelegate>());
+    test('a terminal gets stdout, anything else gets print', () {
+      expect(vm_delegate.consoleDelegateFor(hasTerminal: true), isA<vm_delegate.VmConsoleDelegate>());
+      expect(vm_delegate.consoleDelegateFor(hasTerminal: false), isA<PrintConsoleDelegate>());
     });
 
     test('a line longer than the wrap width is split into pieces', () {

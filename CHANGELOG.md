@@ -24,6 +24,10 @@ Tooling and the release path. Nothing in the engine changed.
 - The analyzer guard test runs the SDK's `dart`, not `Platform.resolvedExecutable`. Under
   `flutter test` that is `flutter_tester`, and `flutter_tester analyze` never returns, so the test
   sat there until its two-minute timeout.
+- The VM console delegate takes its terminal probe as an argument, `consoleDelegateFor(hasTerminal:)`,
+  so both branches are covered wherever the suite runs. The test asserted `PrintConsoleDelegate`
+  outright, which is only what a `stdout` with no terminal selects: `make test` passed with its
+  output piped, as CI runs it, and failed in an interactive shell.
 
 ### Docs
 
