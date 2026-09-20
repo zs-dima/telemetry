@@ -31,7 +31,7 @@ enum LogLevel implements Comparable<LogLevel> {
   /// The app cannot continue in a meaningful state. Captured on the same terms.
   fatal(21, 1200);
 
-  const LogLevel(this.severityNumber, this.developerLevel);
+  LogLevel(this.severityNumber, this.developerLevel);
 
   /// OpenTelemetry severity number, the lower bound of the level's range.
   ///

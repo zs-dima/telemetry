@@ -45,7 +45,7 @@ abstract interface class ConsoleIcon {
 /// One glyph per subsystem, the first segment of the body, after the level
 /// tag, with the word for the area dropped since the glyph says it:
 ///
-/// ```
+/// ```text
 /// [I] 🏗 init | first launch
 /// [I] 🌍 call | ok rpc.path=/auth.v1/SignIn
 /// [E] 🪢 handler | failed control.controller=PairingController | Bad state: …

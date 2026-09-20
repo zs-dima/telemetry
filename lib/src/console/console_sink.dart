@@ -16,7 +16,7 @@ import 'package:telemetry/src/options.dart';
 import 'package:telemetry/src/sink.dart';
 import 'package:telemetry/src/zone.dart';
 
-// ignore: do_not_use_environment, release detection without a Flutter import.
+// ignore: release detection without a Flutter import.
 const bool _kReleaseMode = bool.fromEnvironment('dart.vm.product');
 
 /// Renders [event] as the line a console shows.
