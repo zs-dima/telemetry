@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-09-20
+
+Tooling and the release path. Nothing in the engine changed.
+
+### Changed
+
+- **The SDK constraint is `^3.13.4`.**
+- **`lints_tool` is `^1.1.1` from pub.dev** rather than a git ref on a tag, and it carries the
+  formatter settings and the `dcm` section that `analysis_options.yaml` used to repeat. A dev
+  dependency: nothing a consumer resolves.
+- **A pushed `vX.Y.Z` tag publishes.** The trigger in `deploy.yml` was commented out while the
+  package was not on pub.dev yet. `make release VERSION=x.y.z` is the whole path: gate, bump,
+  commit, tag, push.
+
+### Fixed
+
+- The analyzer guard test runs the SDK's `dart`, not `Platform.resolvedExecutable`. Under
+  `flutter test` that is `flutter_tester`, and `flutter_tester analyze` never returns, so the test
+  sat there until its two-minute timeout.
+
+### Docs
+
+- The subsystem-glyph sample in `ConsoleIcon` is fenced as `text`: it is a rendered console, not
+  Dart.
+
 ## [0.3.5] - 2026-09-05
 
 An architectural review of the whole package: module boundaries, the public surface, the OTel
