@@ -14,3 +14,8 @@ dcm:
     - avoid-top-level-members-in-tests:
         exclude:
           - test/support/**
+    # `test/support/report_diagnostics.dart` is a program a suite spawns, not a
+    # suite: it has a `main`, and it must not be collected by `dart test`.
+    - prefer-correct-test-file-name:
+        exclude:
+          - test/support/**

@@ -39,7 +39,7 @@ test-web: get ## run the browser-only tests
 	@dart test -p chrome test/web
 
 .PHONY: compile-check
-compile-check: ## compile the example for every target the package claims
+compile-check: get ## compile the example for every target the package claims
 	@dart compile js -o build/example.js example/example.dart >/dev/null
 	@dart compile wasm -o build/example.wasm example/example.dart >/dev/null
 

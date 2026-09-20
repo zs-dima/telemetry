@@ -6,6 +6,8 @@ import 'dart:io';
 
 import 'package:test/test.dart';
 
+import 'support/dart_sdk.dart';
+
 /// The unused-draft guard is the analyzer, so this is the test for it.
 ///
 /// A runtime guard cannot tell "never used" from "not used yet", since a draft
@@ -18,7 +20,7 @@ void main() {
     'a dropped builder is an unused_result, and a closed draft is not',
     () async {
       final result = await Process.run(
-        _dartExecutable(),
+        dartExecutable(),
         <String>['analyze', '--format=json', 'test/analyzer/fixture/dropped_draft.dart'],
         workingDirectory: Directory.current.path,
       );
@@ -44,22 +46,6 @@ void main() {
     },
     timeout: const Timeout(Duration(minutes: 2)),
   );
-}
-
-/// The SDK's `dart`, which is NOT `Platform.resolvedExecutable` under `flutter test`: there the
-/// runner is `flutter_tester`, and `flutter_tester analyze` never returns, so this test spent its
-/// whole two-minute timeout waiting on it (2026-09-20).
-String _dartExecutable() {
-  final resolved = Platform.resolvedExecutable;
-  if (RegExp(r'[\\/]dart(\.exe)?$').hasMatch(resolved)) return resolved;
-  final flutterRoot = Platform.environment['FLUTTER_ROOT'];
-  if (flutterRoot != null && flutterRoot.isNotEmpty) {
-    final sdk = <String>[flutterRoot, 'bin', 'cache', 'dart-sdk', 'bin', 'dart'].join(Platform.pathSeparator);
-    for (final candidate in <String>[sdk, '$sdk.exe']) {
-      if (File(candidate).existsSync()) return candidate;
-    }
-  }
-  return 'dart';
 }
 
 /// The 1-based line a diagnostic points at.

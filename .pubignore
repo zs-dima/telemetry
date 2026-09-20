@@ -10,6 +10,7 @@ AGENTS.md
 Makefile
 dart_test.yaml
 .metadata
-# The benchmark and the deliberately broken analyzer fixture: not part of what a consumer needs.
+# The benchmark and the suites: not what a consumer needs, and the suites could not run from the
+# archive anyway, since `dart_test.yaml` and the analyzer fixture stay behind.
 tool/
-test/analyzer/
+test/

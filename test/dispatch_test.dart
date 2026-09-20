@@ -93,20 +93,21 @@ void main() {
       expect(recursive.handled, equals(3), reason: 'the cap is three levels deep');
     });
 
-    test('removeSink stops delivery and clears the failure mark', () {
+    test('removeSink stops delivery', () {
       final broken = FakeSink(throws: true);
       final pipeline = Telemetry(runId: 'run-3d')
         ..addSink(broken)
         ..i('Boot | start | ok')
         ..removeSink(broken)
         ..i('Boot | start | again')
-        // Re-registered, the sink is a stranger again: a failure that was
-        // fixed must be able to report the next one.
         ..addSink(sink)
         ..i('Boot | start | third');
+
       expect(broken.events, isEmpty);
       expect(sink.events, hasLength(1));
       expect(pipeline.buffer.length, equals(3));
+      // That it also clears the sink's failure mark shows up only in what the
+      // package reports, which `test/diagnostics_test.dart` reads back.
     });
 
     test('sinks lists what is registered, in order, and cannot be edited', () {

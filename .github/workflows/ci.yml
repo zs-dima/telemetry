@@ -12,6 +12,7 @@ on:
       - "pubspec.yaml"
       - "analysis_options.yaml"
       - "dart_test.yaml"
+      - "Makefile"
   pull_request:
     paths:
       - ".github/workflows/**"
@@ -22,6 +23,7 @@ on:
       - "pubspec.yaml"
       - "analysis_options.yaml"
       - "dart_test.yaml"
+      - "Makefile"
   workflow_dispatch:
 
 concurrency:
@@ -30,5 +32,27 @@ concurrency:
 
 jobs:
   ci:
-    # One recipe for every package repository, pinned to a tag (zs-dima/lints_tool).
+    # One recipe for every package repository, pinned to a tag (zs-dima/lints_tool). It resolves,
+    # checks formatting, runs `dart analyze`, `dart test` and `dart pub publish --dry-run`.
     uses: zs-dima/lints_tool/.github/workflows/dart-package.yml@v1
+
+  # What the shared recipe cannot cover. Analysis is not compilation, and `dart test` is the VM
+  # only, so `lib/src/console/delegate_js.dart` reaches a compiler and a browser nowhere else.
+  web:
+    name: Compile · Browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Dart
+        uses: dart-lang/setup-dart@v1
+
+      - name: Compile the example to JS and to Wasm
+        run: make compile-check
+
+      # Chrome is on the runner image.
+      - name: Browser tests
+        run: make test-web
