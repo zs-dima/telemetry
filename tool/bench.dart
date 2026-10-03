@@ -1,7 +1,7 @@
 // A benchmark, not a test: it prints numbers and asserts nothing, because a
 // wall-clock threshold in CI is flaky.
 //
-// Run it compiled, with asserts off, which is what `make bench` does:
+// Run it compiled, with asserts off, which is what `just bench` does:
 //
 //   dart compile exe -o build/bench tool/bench.dart && build/bench
 //

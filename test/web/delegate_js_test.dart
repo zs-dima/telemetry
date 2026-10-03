@@ -5,7 +5,7 @@ library;
 // conditional import on `dart.library.js_interop` keeps it out of the VM suite,
 // so a typo in an `external` binding would only surface in a web build.
 //
-//   make test-web    # dart test -p chrome test/web
+//   just test-web    # dart test -p chrome test/web
 
 import 'package:telemetry/src/console/ansi.dart';
 import 'package:telemetry/src/console/delegate_js.dart' as js_delegate;

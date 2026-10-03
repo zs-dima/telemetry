@@ -5,7 +5,7 @@ import 'package:telemetry/telemetry.dart';
 
 /// Run it: `dart run example/example.dart`
 ///
-/// `make compile-check` also builds it with every compiler the package supports:
+/// `just compile-check` also builds it with every compiler the package supports:
 ///
 /// ```sh
 /// dart compile js   -o build/example.js   example/example.dart

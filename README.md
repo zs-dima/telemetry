@@ -243,7 +243,7 @@ Android's logger truncates a call at about 4 KB and the casualty is the stack tr
 
 ## What it costs
 
-`make bench` (compiled, asserts off), per call:
+`just bench` (compiled, asserts off), per call:
 
 | path | ns/op |
 |---|---|

@@ -11,8 +11,9 @@ on:
       - "example/**"
       - "pubspec.yaml"
       - "analysis_options.yaml"
+      - "justfile"
+      - "mise.toml"
       - "dart_test.yaml"
-      - "Makefile"
   pull_request:
     paths:
       - ".github/workflows/**"
@@ -22,8 +23,9 @@ on:
       - "example/**"
       - "pubspec.yaml"
       - "analysis_options.yaml"
+      - "justfile"
+      - "mise.toml"
       - "dart_test.yaml"
-      - "Makefile"
   workflow_dispatch:
 
 concurrency:
@@ -32,9 +34,9 @@ concurrency:
 
 jobs:
   ci:
-    # One recipe for every package repository, pinned to a tag (zs-dima/lints_tool). It resolves,
+    # One recipe for every package repository, pinned to a tag (zs-dima/dev_tool). It resolves,
     # checks formatting, runs `dart analyze`, `dart test` and `dart pub publish --dry-run`.
-    uses: zs-dima/lints_tool/.github/workflows/dart-package.yml@v1
+    uses: zs-dima/dev_tool/.github/workflows/dart-package.yml@v1
 
   # What the shared recipe cannot cover. Analysis is not compilation, and `dart test` is the VM
   # only, so `lib/src/console/delegate_js.dart` reaches a compiler and a browser nowhere else.
@@ -50,9 +52,13 @@ jobs:
       - name: Setup Dart
         uses: dart-lang/setup-dart@v1
 
+      # `just` from mise.toml.
+      - name: Setup just
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+
       - name: Compile the example to JS and to Wasm
-        run: make compile-check
+        run: just compile-check
 
       # Chrome is on the runner image.
       - name: Browser tests
-        run: make test-web
+        run: just test-web
